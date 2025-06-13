@@ -1,0 +1,2934 @@
+---
+title: "Projekt Metody Walidacji Modeli Statystycznych"
+format:
+  html:
+    self-contained: true
+editor: visual
+echo: FALSE
+message: FALSE
+warning: FALSE
+toc: true
+toc_depth: 4
+---
+
+# Cel projektu
+
+Celem jest analiza wzorców i czynników ryzyka związanych z chorobą wieńcową (CHD) oraz ich wizualizacja przy użyciu metod eksploracji danych. Głównym celem jest budowa optymalnego modelu klasyfikacyjnego do przewidywania 10-letniego ryzyka CHD.
+
+Żródło: <https://www.kaggle.com/datasets/aasheesh200/framingham-heart-study-dataset>
+
+# Opis danych
+
+```{r}
+library(readr)
+library(reactable)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(forcats)
+library(viridis)
+library(hrbrthemes)
+library(gridExtra)
+library(tidyr)
+library(skimr)
+library(kableExtra)
+library(broom)
+library(corrplot)
+library(mice)
+library(VIM)
+library(purrr)
+library(caret)
+library(xgboost)
+library(smotefamily)
+library(ROSE)
+library(kernlab)
+library(naniar)
+library(car)
+library(pROC)
+library(MissMech)
+library(mice)
+library(smotefamily)
+library(rpart.plot) # do wizualizacji drzewa
+library(psych)
+library(gt)
+library(doParallel)
+library(glmnet) 
+```
+
+```{r}
+data <- read_csv("D:\\Desktop\\studia II stopien\\III semestr\\eksploracja danych\\framingham.csv")
+
+data_fixed <- data %>%
+  mutate(
+    male = factor(male),
+    currentSmoker = factor(currentSmoker),
+    BPMeds = factor(BPMeds),
+    prevalentStroke = factor(prevalentStroke),
+    prevalentHyp = factor(prevalentHyp),
+    diabetes = factor(diabetes),
+    TenYearCHD = factor(TenYearCHD),
+    education = ordered(education)
+  )
+```
+
+```{r}
+reactable(
+  data_fixed, 
+  theme = reactableTheme(
+    backgroundColor = "#ffffff",  # Tło tabeli
+    color = "#333333",            # Kolor tekstu
+    headerStyle = list(
+      backgroundColor = "#003366",  # Granatowy kolor nagłówków
+      color = "#ffffff",            # Kolor tekstu w nagłówkach
+      fontWeight = "normal",        # Brak pogrubienia tekstu nagłówków
+      textTransform = "none",       # Małe litery w nagłówkach
+      textAlign = "center"          # Wycentrowanie nagłówków
+    ),
+    rowStyle = list(
+      borderBottom = "1px solid #e0e0e0",  # Cienka linia oddzielająca wiersze
+      padding = "10px"                    # Większa przestrzeń wewnętrzna w wierszach
+    )
+  ),
+  pagination = TRUE,  # Paginacja
+  defaultPageSize = 10,  # Liczba wierszy na stronie
+  showPageSizeOptions = TRUE,  # Umożliwia wybór liczby wierszy na stronie
+  pageSizeOptions = c(10, 25, 50, 100),  # Możliwość wyboru liczby wierszy na stronie
+  compact = TRUE,  # Użycie bardziej kompaktowego układu tabeli
+  columns = list(
+    currentSmoker = colDef(width = 150), # Zmiana szerokości kolumny
+    prevalentStroke = colDef(width = 150),
+    prevalentHyp = colDef(width = 150),
+    TenYearCHD = colDef(
+      width = 120,
+      headerStyle = list(
+        backgroundColor = "#FF5733",  # Kolor tła nagłówka ostatniej kolumny
+        color = "#ffffff",            # Kolor tekstu w nagłówku ostatniej kolumny
+        fontWeight = "bold"           # Pogrubiony tekst w nagłówku
+      )
+    )
+  )
+)
+```
+
+Zbiór danych składa się z 15 zmiennych zależnych i jednej zmienne wynikowej TenYearCHD.
+
+1.  **male** – płeć (0 – kobieta, 1 – mężczyzna) (nominalna)
+
+2.  **age** – wiek pacjenta (ciągła)
+
+3.  **education** – poziom wykształcenia (porządkowa)
+
+4.  **currentSmoker** – czy pacjent pali papierosy (0 – nie, 1 – tak) (nominalna)
+
+5.  **cigsPerDay** – liczba papierosów palonych dziennie (ciągła)
+
+6.  **BPMeds** – stosowanie leków na nadciśnienie (0 – nie, 1 – tak) (nominalna)
+
+7.  **prevalentStroke** – czy pacjent miał udar (0 – nie, 1 – tak) (nominalna)
+
+8.  **prevalentHyp** – nadciśnienie (0 – nie, 1 – tak) (nominalna)
+
+9.  **diabetes** – cukrzyca (0 – nie, 1 – tak) (nominalna)
+
+10. **totChol** – poziom cholesterolu całkowitego (mg/dL) (ciągła)
+
+11. **sysBP** – ciśnienie skurczowe (mmHg) (ciągła)
+
+12. **diaBP** – ciśnienie rozkurczowe (mmHg) (ciągła)
+
+13. **BMI** – wskaźnik masy ciała (ciągła)
+
+14. **heartRate** – tętno (bpm) (ciągła)
+
+15. **glucose** – poziom glukozy (mg/dL) (ciągła)
+
+16. **TenYearCHD** – czy pacjent ma 10-letnie ryzyko choroby wieńcowej (0 – nie, 1 – tak) \[zmienna wynikowa\] (nominalna).
+
+W skład danych wchodzi 4240 obserwacji.
+
+# Statystyki opisowe
+
+```{r}
+# Pobranie podsumowania
+skimmed_data <- skim(data_fixed)
+
+# Zamiana nazw kolumn na krótsze i bardziej standardowe
+colnames(skimmed_data) <- gsub("^numeric\\.", "", colnames(skimmed_data))
+colnames(skimmed_data) <- gsub("^factor\\.", "factor_", colnames(skimmed_data))
+colnames(skimmed_data) <- gsub("^skim_", "", colnames(skimmed_data))
+
+# Zaokrąglenie kolumn numerycznych (tych, które istnieją)
+cols_to_round <- c("complete_rate", "mean", "sd", "p0", "p25", "p50", "p75", "p100")
+
+# Zaokrąglamy tylko kolumny, które faktycznie są w data frame
+cols_to_round <- intersect(cols_to_round, colnames(skimmed_data))
+
+skimmed_data[ , cols_to_round] <- round(skimmed_data[ , cols_to_round], 3)
+
+skimmed_data <- skimmed_data %>%
+  dplyr::rename(
+    min = p0,
+    q1 = p25,
+    median = p50,
+    q3 = p75,
+    max = p100
+  )
+```
+
+```{r}
+reactable(skimmed_data, 
+  theme = reactableTheme(
+    backgroundColor = "#ffffff",
+    color = "#333333",
+    headerStyle = list(
+      backgroundColor = "#003366",
+      color = "#ffffff",
+      fontWeight = "normal",
+      textTransform = "none",
+      textAlign = "center"
+    ),
+    rowStyle = list(
+      borderBottom = "1px solid #e0e0e0",
+      padding = "10px",
+      textAlign = "center"
+    )
+  ),
+  pagination = TRUE,
+  defaultPageSize = nrow(skimmed_data),
+  compact = TRUE,
+  columns = list(
+  complete_rate = colDef(
+    width = 120,
+    style = function(value) list(textAlign = "center")
+  ),
+  variable = colDef(width = 180, style = function(value) list(textAlign = "center")),
+  n_missing = colDef(
+    width = 120,
+    style = function(value) {
+      styles <- list(textAlign = "center")
+      if(value != 0) {
+        styles$backgroundColor <- "#FFFACD"
+      }
+      styles
+    }
+  ),
+  factor_ordered = colDef(width = 140, style = function(value) list(textAlign = "center")),
+  factor_n_unique = colDef(width = 140, style = function(value) list(textAlign = "center")),
+  factor_top_counts = colDef(width = 280, style = function(value) list(textAlign = "center"))
+))
+```
+
+Można wstępnie zauważyć, że zmienne mają różne zakresy, więc przy budowie modeli będzie konieczne zastosowanie standaryzacji zmiennych (dla regresji logistycznej oraz SVM).
+
+### Braki danych
+
+Na podstawie powyższej tabeli można zauważyć, że w danych występują braki, które zostały oznaczone na żółto. W związku z tym będzie konieczne wykonanie imputacji danych.
+
+```{r}
+# Liczba wierszy z co najmniej jednym brakiem danych
+rows_with_na <- sum(apply(data, 1, function(x) any(is.na(x))))
+
+# Całkowita liczba wierszy
+total_rows <- nrow(data)
+
+# Procent wierszy z brakami
+percent_with_na <- (rows_with_na / total_rows) * 100
+```
+
+Braki danych występują dla $582$ wierszy i stanowi to $13.73\%$ wszystkich wierszy.
+
+#### Sprawdzenie czy braki występują losowo
+
+```{r}
+#Test Little’a – czy dane są MCAR?
+little_result <- TestMCARNormality(data)
+print(little_result)
+```
+
+Za pomocą Testu Little'a zostało sprawdzone czy dane są MCAR.
+
+Wyniki:
+
+-   **Hawkins Test** (test normalności i homoscedastyczności):\
+    p-value = $2.195037e-115$ (czyli bardzo bliskie $0$, znacznie mniejsze niż $0.05$)\
+    -   odrzucamy hipotezę normalności lub homoscedastyczności.\
+        Oznacza to, że albo rozkład danych nie jest normalny, albo wariancje są nierówne.
+-   **Non-Parametric Test** (test homoscedastyczności nieparametryczny):\
+    p-value = $8.777131e-07$ (również bardzo małe)\
+    -   odrzucamy hipotezę MCAR na poziomie istotności $0.05$.
+
+Braki danych zależą prawdopodobnie od obserwowanych lub nieobserwowanych wartości, czyli dane mogą być MAR (Missing At Random) lub MNAR (Missing Not At Random).
+
+#### Zależności między brakami
+
+```{r, results='asis'}
+vars_to_impute <- c("education", "cigsPerDay", "BPMeds", "totChol", "BMI", "heartRate", "glucose")
+gt_tables <- list()  # inicjalizacja pustej listy do przechowania tabel
+
+for (target_var in vars_to_impute) {
+  data$missing_flag <- is.na(data[[target_var]])
+  
+  # Predyktory – wszystkie poza target_var i missing_flag
+  predictors <- data[, setdiff(names(data), c(target_var, "missing_flag"))]
+  complete_cases <- complete.cases(predictors)
+  predictors_complete <- predictors[complete_cases, , drop = FALSE]
+  missing_flag_complete <- data$missing_flag[complete_cases]
+  
+  df_model <- data.frame(missing_flag = missing_flag_complete, predictors_complete)
+
+  log_model <- glm(missing_flag ~ ., data = df_model, family = binomial)
+  
+  # Tabela wyników jako ramka
+  tidy_model <- broom::tidy(log_model) %>%
+    mutate(
+      estimate = round(estimate, 3),
+      std.error = round(std.error, 3),
+      statistic = round(statistic, 3),
+      p.value = round(p.value, 4)
+    )
+  
+  gt_table <- gt(tidy_model) %>%
+    tab_header(
+      title = paste("Model regresji logistycznej – brak danych dla:", target_var)
+    ) %>%
+    cols_label(
+      term = "Zmienne",
+      estimate = "Estymata (coef.)",
+      std.error = "Błąd std.",
+      statistic = "Statystyka z",
+      p.value = "Wartość p"
+    ) %>%
+    data_color(
+      columns = vars(p.value),
+      colors = scales::col_bin(
+        bins = c(0, 0.001, 0.01, 0.05, 0.1, 1),
+        palette = c("#b10026", "#e31a1c", "#fc4e2a", "#feb24c", "#dddddd")
+      )
+    )
+  
+  # Zapis do listy
+  gt_tables[[target_var]] <- gt_table
+}
+
+# Wyświetlenie tabel poza pętlą
+for (table_name in names(gt_tables)) {
+  cat("###", paste("Braki w zmiennej:", table_name), "\n\n")
+  print(gt_tables[[table_name]])
+}
+```
+
+##### Zmienna education
+
+-   Intercept jest istotny statystycznie ($p < 0.001$), co wskazuje na bazowe prawdopodobieństwo braku danych.
+
+-   Spośród predyktorów istotna jest tylko zmienna **BMI** ($p = 0.025$), z dodatnim współczynnikiem $0.06$, co oznacza, że wraz ze wzrostem BMI rośnie prawdopodobieństwo braku danych w zmiennej education.
+
+-   Pozostałe zmienne nie wykazują statystycznie istotnego związku z brakiem danych w education (wszystkie $p > 0.05$).
+
+**Wniosek:** Braki w zmiennej education są generalnie niezależne od większości zmiennych, ale mają związek z BMI.
+
+##### Zmienna cigsPerDay
+
+-   Żaden współczynnik nie jest istotny na poziomie $p < 0.05$.
+
+-   Zbliżona do istotności jest zmienna **glucose** ($p = 0.068$), ale to jest tylko tendencja.
+
+-   Wysokie błędy standardowe dla niektórych zmiennych (np. intercept) mogą wskazywać na problemy z dopasowaniem modelu lub na bardzo małą liczbę braków.
+
+**Wniosek:** Braki danych w cigsPerDay wydają się być losowe lub niezwiązane z badanymi zmiennymi (brak silnych zależności).
+
+##### Zmienna BPMeds
+
+-   Istotne statystycznie są: intercept ($p=0.0229$), płeć (male, $p=0.0309$) i wiek (age, $p=0.0245$).
+
+-   Intercept jest ujemny, więc bazowe prawdopodobieństwo braku danych jest niewielkie.
+
+-   Wartość ujemna współczynnika przy male oznacza, że mężczyźni mają mniejsze prawdopodobieństwo braku danych w BPMeds.
+
+-   Wiek ma dodatni wpływ na brak danych, czyli starsze osoby mają większe prawdopodobieństwo braku danych w BPMeds.
+
+-   Pozostałe zmienne nie są istotne.
+
+**Wniosek:** Braki w BPMeds zależą od wieku i płci, nie są całkiem losowe.
+
+##### Zmienna totChol
+
+-   Istotna jest zmienna **glucose** ($p = 0.0058$) z dodatnim współczynnikiem, co oznacza, że wyższy poziom glukozy jest związany z większym prawdopodobieństwem braku danych w totChol.
+
+-   Intercept i zmienna male są na granicy istotności (\$p4 \~ $0.055$ i $0.086$), co sugeruje pewne podstawowe różnice.
+
+-   Pozostałe zmienne nie są istotne.
+
+**Wniosek:** Braki w totChol są częściowo zależne od poziomu glukozy.
+
+##### Zmienna BMI
+
+-   Istotne zmienne to:
+
+    -   **prevalentStroke** ($p=0.000561$) — osoby z udarem mają większe prawdopodobieństwo braku BMI.
+
+    -   **diaBP** (ciśnienie rozkurczowe, $p=0.0488$) — ujemny wpływ.
+
+    -   **TenYearCHD** ($p=0.0048$) — dodatni wpływ.
+
+-   Współczynnik przy prevalentStroke jest dodatni ($3.35$), bardzo silny.
+
+-   Intercept i niektóre zmienne są na granicy (np. totChol $p=0.099$).
+
+**Wniosek:** Braki danych w BMI są skorelowane z obecnością udaru, wartością ciśnienia rozkurczowego i ryzykiem CHD.
+
+### Duplikaty zmiennych
+
+```{r}
+duplicated_rows <- duplicated(data)
+
+sum(duplicated(data) | duplicated(data, fromLast = TRUE))
+```
+
+W zmiennych nie występują zduplikowane rekordy.
+
+### Wykrywanie zmiennych o zerowej wariancji
+
+```{r}
+# Wariancja zmiennych numerycznych
+zero_var_cols <- sapply(data_fixed, function(x) {
+  if(is.numeric(x)) {
+    v <- var(x, na.rm = TRUE)
+    return(!is.na(v) && v == 0)
+  } else {
+    return(FALSE)
+  }
+})
+
+names(data)[zero_var_cols]
+```
+
+W danych nie występują zmienne o zerowej wariancji.
+
+### Liczebność zmiennej wynikowej
+
+```{r}
+# Tworzenie podsumowania
+tabela <- data %>%
+  count(TenYearCHD) %>%
+  mutate(Procent = round(n / sum(n) * 100, 1))
+
+# Wyświetlenie tabeli jako reactable
+reactable(tabela,
+  theme = reactableTheme(
+    backgroundColor = "#ffffff",
+    color = "#333333",
+    headerStyle = list(
+      backgroundColor = "#003366",
+      color = "#ffffff",
+      fontWeight = "normal",
+      textTransform = "none",
+      textAlign = "center"
+    ),
+    rowStyle = list(
+      borderBottom = "1px solid #e0e0e0",
+      padding = "10px"
+    )
+  ),
+  pagination = TRUE,
+  defaultPageSize = nrow(tabela),
+  compact = TRUE,
+  columns = list(
+    TenYearCHD = colDef(name = "TenYearCHD"),
+    n = colDef(name = "Liczebność"),
+    Procent = colDef(name = "Procent (%)")
+  )
+)
+```
+
+Zmienna wynikowa `TenYearCHD` jest nierównomiernie rozłożona. Wartość $0$ występuje dla $84.8\%$ przypadków, natomiast zmienna $1$ dla jedynie $15.2\%$. W związku z tym przy budowach modeli będzie trzeba zastosować metodę SMOTE lub wagi klas.
+
+### Korelacja zmiennych
+
+```{r}
+
+ciagle <- c("age", "cigsPerDay", "totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose")
+porzadkowe <- c("education")
+binarnie_nominalne <- c("male", "currentSmoker", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes", "TenYearCHD")
+```
+
+```{r}
+spearman_vars <- c(ciagle, porzadkowe)
+spearman_matrix <- cor(data[, spearman_vars], use = "complete.obs", method = "spearman")
+
+# Wizualizacja
+corrplot(spearman_matrix, method = "color", order = "hclust", 
+         col = colorRampPalette(c("#4A90E2", "white", "#FA5053"))(200), 
+         addCoef.col = "black", number.cex = 0.7, tl.cex = 0.8, tl.col = "black",
+         title = "Korelacja Spearmana dla zmiennych ciągłych i porządkowych", mar=c(0,0,2,0))
+```
+
+-   Korelacja między `sysBP` i `diaBP` (0.78) - jest to jest silna korelacja. Oznacza to, że ciśnienie skurczowe i rozkurczowe poruszają się w podobny sposób.
+
+    Zatrzymywanie obu tych zmiennych może wprowadzać redundancję do modelu. Możesz rozważyć:
+
+    Zostanie stworzona nowa zmienna pulse `meanBP = (sysBP + diapBP`)/2, i zastąpi ona obie oryginalne zmienne. Zostanie zachowana w ten sposób informacja z obu zmiennych, jednocześnie redukując wymiarowość.
+
+-   Zmienna `age` jest umiarkowanie skorelowane z `sysBP` (0.39), `diaBP` (0.21), `totChol` (0.29). Jest oczekiwane, ponieważ wiele parametrów zdrowotnych zmienia się wraz z wiekiem. Te korelacje są na tyle umiarkowane, że nie sugerują natychmiastowego usunięcia żadnej zmiennej.
+
+-   `BMI` jest umiarkowanie skorelowane z `sysBP` (0.32), `diaBP` (0.38), `totChol` (0.15).
+
+-   `education` wydaje się mieć słabe korelacje ze wszystkimi zmiennymi w tej macierzy (najwyższa -0.21 z `age`). To może sugerować, że `education` ma mniejsze znaczenie w kontekście monotonicznych relacji z tymi zmiennymi. Jednak korelacja Spearmana nie wykrywa nieliniowych zależności, a niska korelacja z innymi predyktorami nie oznacza niskiej korelacji z zmienną wynikową (TenYearCHD).
+
+-   
+
+```{r}
+phi_matrix <- matrix(NA, nrow = length(binarnie_nominalne), ncol = length(binarnie_nominalne),
+                     dimnames = list(binarnie_nominalne, binarnie_nominalne))
+
+for (i in 1:length(binarnie_nominalne)) {
+  for (j in 1:length(binarnie_nominalne)) {
+    x <- data[[binarnie_nominalne[i]]]
+    y <- data[[binarnie_nominalne[j]]]
+    tbl <- table(x, y)
+    if (nrow(tbl) == 2 && ncol(tbl) == 2) {
+      phi_matrix[i, j] <- phi(tbl)
+    }
+  }
+}
+
+# Wizualizacja
+corrplot(phi_matrix,
+         method = "color",
+         col = colorRampPalette(c("#4A90E2", "white", "#FA5053"))(200),  # niebieski – biały – czerwony
+         addCoef.col = "black",
+         number.cex = 0.7,
+         tl.cex = 0.8,
+         tl.col = "black",
+         title = "Korelacja phi dla zmiennych binarnych",
+         mar = c(0, 0, 2, 0))
+```
+
+W tym przypadku żadne zmienne nie korelują ze sobą istotnie. Największa wartość jaka występuje to korelacja pomiędzy `BPMeds` i `prevalentHyp` i wynosi ona 0.26. Nie jest to jednak istotna korelacja, a raczej słaba.
+
+```{r}
+eta_results <- matrix(NA, nrow = length(binarnie_nominalne), ncol = length(ciagle),
+                      dimnames = list(binarnie_nominalne, ciagle))
+
+for (b in binarnie_nominalne) {
+  for (c in ciagle) {
+    model <- aov(data[[c]] ~ as.factor(data[[b]]))
+    eta <- DescTools::EtaSq(model, type = 1, anova = FALSE)
+    eta_results[b, c] <- eta[1]
+  }
+}
+
+pheatmap::pheatmap(eta_results,
+         display_numbers = TRUE,
+         main = "Eta-squared: binarne vs ciągłe",
+         color = colorRampPalette(c("white", "#FA5053"))(200),
+         breaks = seq(0, 1, length.out = 201))
+```
+
+-   Związek `currentSmoker` (Palacz) ze `cigsPerDay` (Liczba papierosów dziennie)
+
+    -   η2=0.59
+
+    -   Jest to bardzo wysoki poziom wyjaśnianej wariancji. Zmienna `currentSmoker` wyjaśnia aż 59% wariancji w zmiennej `cigsPerDay`.
+
+    -   W związku z tym zostanie rozważone usuniecie zmiennej `currentSmoker`.
+
+-   Związek `prevalentHyp` (Nadciśnienie) z `sysBP` (Ciśnienie skurczowe) i `diaBP` (Ciśnienie rozkurczowe)
+
+    -   `prevalentHyp` vs `sysBP`: η2=0.49
+
+    -   `prevalentHyp` vs `diaBP`: η2=0.38
+
+    -   Są to bardzo wysokie poziomy wyjaśnianej wariancji. Fakt posiadania nadciśnienia (binarna zmienna `prevalentHyp`) wyjaśnia odpowiednio 49% i 38% wariancji w zmiennych ciśnienia krwi. Oznacza to, że osoby z nadciśnieniem mają znacznie wyższe wartości `sysBP` i `diaBP`.
+
+    -   Zmienne `sysBP` oraz `diaBP` zostanie rozważone wykorzystane tych zmiennych do stworzenia nowej zmiennej a `meanBP`, czyli średniego ciśnienia. Zmienne `sysBP` oraz `diaBP` zostałyby w takim przypadku wykluczone.
+
+-   Związek `diabetes` (Cukrzyca) z `glucose` (Poziom glukozy)
+
+    -   `diabetes` vs `glucose`: η2=0.38
+
+    -   Jest to **wysoki** poziom wyjaśnianej wariancji. Zmienna `diabetes` wyjaśnia 38% wariancji w zmiennej `glucose`. Sensowne jest, że osoby z cukrzycą mają wyższy poziom glukozy.
+
+    -   Podobnie jak z nadciśnieniem, te zmienne dostarczają powiązanych informacji.
+
+    -   Zostanie rozważone wykluczenie zmiennej `glucose`.
+
+-   Związek `TenYearCHD` (Zmienna wynikowa) ze zmiennymi ciągłymi
+
+    -   `TenYearCHD` vs `sysBP`: η2=0.05 (niska)
+    -   `TenYearCHD` vs `age`: η2=0.05 (niska)
+    -   `TenYearCHD` vs `diaBP`: η2=0.02 (bardzo niska)
+    -   `TenYearCHD` vs `glucose`: η2=0.01 (bardzo niska)
+    -   `TenYearCHD` vs `BMI`: η2=0.01 (bardzo niska)
+    -   `TenYearCHD` vs `heartRate`: η2=0.00 (bardzo niska)
+    -   `TenYearCHD` vs `cigsPerDay`: η2=0.00 (bardzo niska)
+    -   Te wartości η2 są niepokojąco niskie. Sugerują, że zmienna `TenYearCHD` (jako zmienna binarna) wyjaśnia bardzo małą część wariancji w tych zmiennych ciągłych. Oznaczałoby to, że grupy z `TenYearCHD=0` i `TenYearCHD=1` mają bardzo podobne rozkłady wartości dla tych zmiennych ciągłych.
+
+-   Bardzo niskie η2 dla `prevalentStroke` i `BPMeds` ze zmiennymi ciągłymi
+
+    -   `prevalentStroke`: Prawie wszystkie wartości η2 są 0.00.
+    -   `BPMeds`: Wartości η2 są bardzo niskie (max 0.04).
+    -   Te zmienne binarne praktycznie nie wyjaśniają wariancji w żadnej ze zmiennych ciągłych.
+    -   W połączeniu z ich niskimi korelacjami ze zmienną wynikową (`TenYearCHD`) z macierzy Phi (`prevalentStroke` = 0.06, `BPMeds` = 0.09), te zmienne stają się silnymi kandydatami do usunięcia ze zbioru danych. Mogą dodawać szum do modelu bez dostarczania znaczącej informacji.
+
+## Wizualizacja zmiennych
+
+### Histogramy
+
+```{r, fig.width=8, fig.height=8}
+data_long <- data %>% 
+  pivot_longer(cols = c(age, cigsPerDay,
+                      totChol, sysBP,diaBP, BMI, heartRate, glucose),
+               names_to = "variable", values_to = "value")
+
+data_long <- data_long %>% filter(!is.na(value))
+
+ggplot(data_long, aes(x = value, fill = variable, color = variable)) +
+  geom_histogram(alpha = 0.6, binwidth = 5) +
+  scale_fill_viridis(discrete = TRUE) +
+  scale_color_viridis(discrete = TRUE) +
+  theme_ipsum() +
+  theme(
+    legend.position = "none",
+    panel.spacing = unit(1, "lines"),  # Większe przerwy między wykresami
+    strip.text.x = element_text(size = 8),
+    panel.grid = element_blank(),  # Usunięcie siatki między wykresami
+    panel.grid.major = element_line(color = "gray", size = 0.5),  # Siatka główna w wykresach
+    panel.grid.minor = element_line(color = "gray", size = 0.25)  # Siatka pomocnicza w wykresach
+  ) +
+  xlab("") +
+  ylab("Frequency") +
+  facet_wrap(~variable, scales = "free", ncol = 3)
+```
+
+### Rozkłady gęstości
+
+```{r, fig.width=8, fig.height=8}
+ggplot(data_long, aes(x = value, fill = variable, color = variable)) +
+  geom_density(alpha = 0.6) +
+  scale_fill_viridis(discrete = TRUE) +
+  scale_color_viridis(discrete = TRUE) +
+  theme_ipsum() +
+  theme(
+    legend.position = "none",
+    panel.spacing = unit(1, "lines"),
+    strip.text.x = element_text(size = 8),
+    panel.grid = element_blank(),
+    panel.grid.major = element_line(color = "gray", size = 0.5),
+    panel.grid.minor = element_line(color = "gray", size = 0.25)
+  ) +
+  xlab("") +
+  ylab("Density") +
+  facet_wrap(~variable, scales = "free", ncol = 3)
+```
+
+Opis wykresów:
+
+-   **age**: Rozkład jest lekko prawostronnie asymetryczny. Większość obserwacji znajduje się w przedziale 30–60 lat, z malejącą liczbą przypadków w starszych grupach wiekowych.
+
+-   **BMI**: Rozkład jest zbliżony do normalnego, z lekką asymetrią prawostronną. Najwięcej osób ma BMI między 20 a 30.
+
+-   **cigsPerDay**: Rozkład jest silnie prawostronnie asymetryczny. Duża liczba osób nie pali (wartość 0), a liczba palących maleje wraz ze wzrostem liczby wypalanych papierosów.
+
+-   **diaB**: Rozkład przypomina normalny, skoncentrowany wokół 75–85 mmHg.
+
+-   **glucose**: Rozkład jest silnie prawostronnie asymetryczny. Większość wartości skupia się wokół 80–100 mg/dL, ale występują obserwacje odstające (outliery) powyżej 200 mg/dL.
+
+-   **heartRate**: Rozkład zbliżony do normalnego, z największą liczbą przypadków w zakresie 60–80 uderzeń/min.
+
+-   **sysBP**: Silnie prawostronnie asymetryczny rozkład, większość osób ma wartość w zakresie 110–150 mmHg, ale są też wartości powyżej 200.
+
+-   **totChol**: Prawostronnie asymetryczny rozkład. Najwięcej obserwacji znajduje się w przedziale 150–250 mg/dL, ale występują również wartości odstające (ponad 400 mg/dL).
+
+### Boxploty
+
+```{r, fig.width=8, fig.height=8}
+ggplot(data_long, aes(y = value, fill = variable, color = variable)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = 16, outlier.size = 3) +  # Dodanie wykresu pudełkowego z punktami odstającymi
+  scale_fill_viridis(discrete = TRUE) +
+  scale_color_viridis(discrete = TRUE) +
+  theme_ipsum() +
+  theme(
+    legend.position = "none",
+    panel.spacing = unit(1, "lines"),  # Większe przerwy między wykresami
+    strip.text.x = element_text(size = 10),  # Rozmiar tytułów w strip
+    panel.grid = element_blank(),  # Usunięcie siatki między wykresami
+    panel.grid.major = element_line(color = "gray", size = 0.5),  # Siatka główna w wykresach
+    panel.grid.minor = element_line(color = "gray", size = 0.25),  # Siatka pomocnicza w wykresach
+    axis.text.x = element_blank(),  # Usunięcie etykiet na osi X
+    axis.ticks.x = element_blank()  # Usunięcie ticków na osi X
+  ) +
+  ylab("Value") +  # Przesunięcie etykiety na oś Y
+  xlab("") +
+  facet_wrap(~variable, scales = "free", ncol = 3)
+```
+
+Analiza boxplotów dla zmiennych numerycznych ujawniła, że większość z nich charakteryzuje się obecnością wartości odstających, szczególnie widocznych w górnych krańcach rozkładów (`BMI`, `cigsPerDay`, `totChol`, `sysBP`, `glucose`). Zauważalna jest również skośność rozkładów, zwłaszcza dla `cigsPerDay` i `glucose`, gdzie mediana jest znacznie bliżej dolnego kwartyla, a górne wąsy i wartości odstające rozciągają się daleko. Te obserwacje podkreślają konieczność skalowania oraz rozważenia strategii obsługi wartości odstających przed budową modeli, aby zapewnić ich stabilność i dokładność.
+
+### Analiza wartości odstających
+
+```{r}
+# Lista zmiennych ciągłych wg Twojego opisu
+zmienne_ciagle <- c("age", "cigsPerDay", "totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose")
+
+# Funkcja wykrywająca outliery metodą IQR
+detect_outliers_iqr <- function(x) {
+  Q1 <- quantile(x, 0.25, na.rm=TRUE)
+  Q3 <- quantile(x, 0.75, na.rm=TRUE)
+  IQR <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR
+  upper_bound <- Q3 + 1.5 * IQR
+  which(x < lower_bound | x > upper_bound)
+}
+
+# Wykrywanie outlierów dla każdej zmiennej ciągłej
+outliers_list <- lapply(data_fixed[, zmienne_ciagle], detect_outliers_iqr)
+
+# Ile outlierów jest w każdej zmiennej
+outliers_count <- sapply(outliers_list, length)
+
+kable(outliers_count, caption = "Liczba wartości odstających (outlierów) dla zmiennych ciągłych", align = c("l", "c")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  column_spec(1, width = "8cm") %>%
+  column_spec(2, width = "4cm")      
+```
+
+Powyższa tabela pokazuje jak wyglądają liczebności wartości odstających dla poszczególnych zmiennych. W późniejszym etapie zostanie dla nich wykonana winsoryzacja.
+
+## Potencjalne wykluczenie zmiennych
+
+### Niska wariancja dla zmiennych nominalnych/porządkowych (dominacja jednej kategorii)
+
+```{r}
+# Lista zmiennych kategorycznych
+categorical_vars <- c("male", "education", "currentSmoker", "BPMeds",
+                      "prevalentStroke", "prevalentHyp", "diabetes")
+
+# Obliczanie proporcji
+category_props <- lapply(categorical_vars, function(var) {
+  counts <- table(data_fixed[[var]], useNA = "no")
+  proportions <- prop.table(counts)
+
+  tibble(
+    Zmienna = var,
+    Kategoria = names(proportions),
+    Proporcja = round(as.numeric(proportions), 3),
+    Dominacja = ifelse(proportions > 0.95, "TAK", "NIE")
+  )
+}) %>%
+  bind_rows() %>%
+  arrange(Zmienna, desc(Proporcja))
+
+# Tworzenie tabeli gt
+gt_category_table <- category_props %>%
+  gt() %>%
+  tab_header(
+    title = "Proporcje kategorii w zmiennych kategorycznych",
+    subtitle = "Z podświetleniem dominujących kategorii (>95%)"
+  ) %>%
+  fmt_percent(
+    columns = c(Proporcja),
+    decimals = 1,
+    scale_values = TRUE  # bo wartości są między 0 a 1
+  ) %>%
+  data_color(
+    columns = Dominacja,
+    colors = scales::col_factor(
+      palette = c("TAK" = "#ffcccc", "NIE" = "white"),
+      domain = c("TAK", "NIE")
+    )
+  )
+
+gt_category_table
+```
+
+Analiza wariancji zmiennych nominalnych i porządkowych wykazała, że niektóre z nich cechują się bardzo nierównomiernym rozkładem kategorii. Dla zmiennych `BPMeds`, `prevalentStroke` oraz `diabetes` ponad 95% przypadków należy do jednej kategorii, co może świadczyć o ich niskiej wartości informacyjnej. W kolejnych etapach przeanalizowano wartość predykcyjną tych zmiennych względem zmiennej docelowej (`TenYearCHD`) przy użyciu testu chi-kwadrat oraz ważności cech w modelach klasyfikacyjnych. Na tej podstawie podjęto decyzję o (zachowaniu/usunięciu) wybranych zmiennych. Pozostałe zmienne, takie jak `male`, `education`, `currentSmoker` i `prevalentHyp`, charakteryzują się wystarczającą zmiennością i zostały uwzględnione w dalszej analizie.
+
+### Związek zmiennych ze zmienną wynikową (`TenYearCHD`)
+
+#### Zmienne ciągłe vs. `TenYearCHD` (test t-Studenta)
+
+```{r, results='asis'}
+# Lista zmiennych ciągłych
+continuous_vars <- c("age", "cigsPerDay", "totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose")
+
+# Obliczanie wyników testów t-Studenta
+t_test_results <- lapply(continuous_vars, function(var) {
+  test_result <- tryCatch({
+    t.test(data_fixed[[var]] ~ data_fixed$TenYearCHD, na.action = na.omit)
+  }, error = function(e) {
+    message("Błąd w t.test dla zmiennej ", var, ": ", e$message)
+    return(NULL)
+  })
+  
+  if (!is.null(test_result)) {
+    tibble(
+      Zmienna = var,
+      `p-value` = test_result$p.value,
+      Istotność = ifelse(test_result$p.value < 0.05, "TAK", "NIE")
+    )
+  } else {
+    NULL
+  }
+}) %>%
+  bind_rows() %>%
+  mutate(`p-value` = round(`p-value`, 4))  # zaokrąglenie po scaleniu
+
+gt_t_test <- t_test_results %>%
+  gt() %>%
+  tab_header(
+    title = "Wyniki testów t-Studenta",
+    subtitle = "Porównanie średnich wartości zmiennych ciągłych względem TenYearCHD"
+  ) %>%
+  data_color(
+    columns = Istotność,
+    colors = scales::col_factor(
+      palette = c("TAK" = "#c6f5d4", "NIE" = "#fddddd"),
+      domain = c("TAK", "NIE")
+    )
+  ) %>%
+  fmt_number(
+    columns = `p-value`,
+    decimals = 4
+  )
+
+gt_t_test
+```
+
+W celu oceny istotności różnic średnich wartości zmiennych ciągłych w grupach z różnym wystąpieniem choroby wieńcowej (TenYearCHD), przeprowadzono test t-Studenta dla każdej zmiennej.
+
+Test wykazał istotne statystycznie różnice w średnich wartościach dla większości badanych zmiennych ciągłych, takich jak wiek (age), liczba wypalanych papierosów dziennie (cigsPerDay), całkowity cholesterol (totChol), ciśnienie skurczowe (sysBP), ciśnienie rozkurczowe (diaBP), wskaźnik masy ciała (BMI) oraz poziom glukozy (glucose). Oznacza to, że wartości tych zmiennych znacząco różnią się pomiędzy osobami z różnym ryzykiem wystąpienia choroby wieńcowej w perspektywie 10 lat.
+
+Zmienna heartRate nie wykazała istotnych różnic średnich między grupami (p-value = 0.142), co sugeruje brak silnego związku tej cechy z występowaniem choroby wieńcowej w analizowanym zbiorze danych.
+
+Na podstawie tych wyników zmienne istotne statystycznie zostały uwzględnione w dalszej analizie i modelowaniu predykcyjnym, natomiast zmienna heartRate może być rozważona do wykluczenia lub dalszej weryfikacji.
+
+#### Zmienne nominalne/porządkowe vs. `TenYearCHD` (test chi-kwadrat)
+
+```{r, results='asis'}
+# Lista wyników testu chi-kwadrat
+chi_sq_results <- lapply(categorical_vars, function(var) {
+  contingency_table <- table(data_fixed[[var]], data_fixed$TenYearCHD, useNA = "no")
+  
+  # Sprawdzenie niskich częstości
+  low_counts_warning <- ifelse(any(contingency_table < 5) && sum(contingency_table) > 0,
+                               "TAK", "NIE")
+  
+  test_result <- tryCatch({
+    chisq.test(contingency_table)
+  }, error = function(e) {
+    message("Błąd w chisq.test dla zmiennej ", var, ": ", e$message)
+    return(NULL)
+  })
+  
+  if (!is.null(test_result)) {
+    tibble(
+      Zmienna = var,
+      `p-value` = test_result$p.value,
+      Istotność = ifelse(test_result$p.value < 0.05, "TAK", "NIE"),
+      `Niskie częstości` = low_counts_warning
+    )
+  } else {
+    NULL
+  }
+}) %>%
+  bind_rows() %>%
+  mutate(`p-value` = round(`p-value`, 4))  # Zaokrąglenie po scaleniu
+
+# Tworzenie tabeli gt
+gt_chi_sq <- chi_sq_results %>%
+  gt() %>%
+  tab_header(
+    title = "Wyniki testów chi-kwadrat",
+    subtitle = "Analiza związku zmiennych kategorycznych z TenYearCHD"
+  ) %>%
+  data_color(
+    columns = Istotność,
+    colors = scales::col_factor(
+      palette = c("TAK" = "#c6f5d4", "NIE" = "#fddddd"),
+      domain = c("TAK", "NIE")
+    )
+  ) %>%
+  data_color(
+    columns = `Niskie częstości`,
+    colors = scales::col_factor(
+      palette = c("TAK" = "#fff3cd", "NIE" = "white"),
+      domain = c("TAK", "NIE")
+    )
+  ) %>%
+  fmt_number(
+    columns = `p-value`,
+    decimals = 4
+  )
+
+gt_chi_sq
+```
+
+Analiza rozkładu zmiennych nominalnych i porządkowych wykazała, że niektóre zmienne cechują się bardzo nierównomiernym rozkładem kategorii. W szczególności zmienne BPMeds, prevalentStroke oraz diabetes mają ponad 95% przypadków w jednej kategorii, co sugeruje ich niską wartość informacyjną i potencjalnie ograniczoną użyteczność predykcyjną.
+
+W celu oceny związku tych zmiennych z celem, wykonano test chi-kwadrat niezależności między zmiennymi a zmienną docelową TenYearCHD.
+
+Test wykazał istotne statystycznie powiązania zmiennych male, education, BPMeds, prevalentStroke, prevalentHyp oraz diabetes z występowaniem choroby wieńcowej w perspektywie 10 lat (TenYearCHD). Z kolei zmienna currentSmoker nie wykazała istotności statystycznej.
+
+Na podstawie wyników testu chi-kwadrat oraz analizy ważności cech w modelach klasyfikacyjnych podjęto decyzję o zachowaniu zmiennych charakteryzujących się istotnym związkiem z celem, pomimo niskiej zmienności w przypadku niektórych zmiennych (np. BPMeds, diabetes). Z kolei zmienne o niskiej wartości informacyjnej oraz bez istotnego związku z celem mogą zostać rozważone do wykluczenia w dalszych etapach analizy.
+
+Pozostałe zmienne, takie jak male, education, currentSmoker i prevalentHyp, wykazały wystarczającą zmienność i zostały uwzględnione w dalszych etapach modelowania predykcyjnego.
+
+#### Multikolinearność (VIF - Variance Inflation Factor)
+
+```{r, results='asis'}
+# Przygotowanie danych bez braków
+data_for_vif <- data_fixed %>%
+  select(age, cigsPerDay, totChol, sysBP, diaBP, BMI, heartRate, glucose,
+         male, education, currentSmoker, BPMeds, prevalentStroke, prevalentHyp, diabetes) %>%
+  na.omit()
+
+# Sprawdzenie czy są dane po na.omit()
+if (nrow(data_for_vif) > 0) {
+  # Model regresji liniowej (sysBP jako zmienna zależna)
+  model_vif <- lm(sysBP ~ age + cigsPerDay + totChol + diaBP + BMI + heartRate + glucose +
+                    male + education + currentSmoker + BPMeds + prevalentStroke + prevalentHyp + diabetes,
+                  data = data_for_vif)
+
+  # Obliczanie GVIF
+  vif_results <- car::vif(model_vif)
+
+  # Stworzenie tabeli wyników
+  vif_df <- data.frame(
+    Variable = rownames(vif_results),
+    GVIF = vif_results[, "GVIF"],
+    Df = vif_results[, "Df"],
+    Standard_VIF = vif_results[, "GVIF^(1/(2*Df))"],
+    row.names = NULL,
+    stringsAsFactors = FALSE
+  )
+
+  # Tworzenie tabeli gt z podświetleniem
+  vif_df %>%
+    select(Variable, Standard_VIF) %>%
+    gt() %>%
+    tab_header(
+      title = "Wyniki analizy VIF",
+      subtitle = "Standardowy współczynnik GVIF^(1/(2×Df))"
+    ) %>%
+    fmt_number(
+      columns = c(Standard_VIF),
+      decimals = 3
+    ) %>%
+    data_color(
+      columns = c(Standard_VIF),
+      colors = scales::col_numeric(
+        palette = c("#c6f5d4", "#fddddd"),
+        domain = c(min(vif_df$Standard_VIF), max(vif_df$Standard_VIF))
+      )
+    ) %>%
+    print()
+} else {
+  cat("Brak danych po usunięciu braków do analizy VIF.\n")
+}
+
+```
+
+Brak zmiennych z wysokim standardowym VIF. Multikolinearność nie wydaje się być znaczącym problemem. Nawet najwyższe wartości w tabeli nie są problematyczne.
+
+# Preprocessing
+
+## Podział danych na zbiór treningowy i testowy
+
+Dane zostały podzielone na zbiór treningowy (70%) i testowy (30%). Podział był stratyfikowany względem zmiennej `TenYearCHD`, co oznacza, że proporcje klas zostały zachowane w obu zbiorach.
+
+Dodatkowo, zmienna `TenYearCHD` w obu zbiorach została przekształcona na typ faktorowy, a jej nazwy poziomów zostały ustandaryzowane (np. "0" na "X0", "1" na "X1").
+
+```{r}
+# Podział danych: train, test
+set.seed(123)
+split <- createDataPartition(data_fixed$TenYearCHD, p = 0.7, list = FALSE)
+train <- data_fixed[split, ]
+test <- data_fixed[-split, ]
+
+# Konwersja zmiennej celu na faktor i zmiana nazw poziomów
+train$TenYearCHD <- factor(make.names(train$TenYearCHD))
+test$TenYearCHD <- factor(make.names(test$TenYearCHD))
+
+# Rozmiary zbiorów
+cat("Wielkość zbioru treningowego:", nrow(train), "\n")
+cat("Wielkość zbioru testowego:", nrow(test), "\n")
+```
+
+## Imputacja braków danych i budowa modeli
+
+### Imputacja wielokrotna na zbiorze treningowym
+
+Do imputacji została wykorzystana wielokrotna imputacja (Multiple Imputation) brakujących danych w zbiorze treningowym (`train`) przy użyciu pakietu `mice`
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+set.seed(123)
+
+# Ustawienie metod imputacji dla train
+metody <- make.method(train)
+
+metody["education"] <- "polr"  # zmienna porządkowa
+metody["cigsPerDay"] <- "pmm"  # zmienna ciągła
+metody["BPMeds"] <- "logreg"    # zmienna binarna
+metody["totChol"] <- "pmm"
+metody["BMI"] <- "pmm"
+
+# Ustawienie macierzy predyktorów dla train
+pred <- make.predictorMatrix(train)
+pred[,] <- 0 
+
+pred["education", "BMI"] <- 1
+pred["cigsPerDay", "glucose"] <- 1
+pred["BPMeds", c("male", "age")] <- 1
+pred["totChol", "glucose"] <- 1
+pred["BMI", c("prevalentStroke", "diaBP", "TenYearCHD")] <- 1
+
+# Wyłączenie zmiennej wynikowej z predyktorów innych imputacji
+pred[, "TenYearCHD"] <- 0
+pred["BMI", "TenYearCHD"] <- 1  # wyjątkowo zostaje
+
+min_values <- c("cigsPerDay" = 0) # cigsPerDay nie może być mniejsze niż 0
+
+# Wykonanie imputacji
+wynik_imputacji <- suppressMessages(
+  mice(train, method = metody, predictorMatrix = pred, m = 5, maxit = 50, min = min_values)
+)
+
+# Pierwszy zestaw imputacji jako dane kompletne treningowe
+train_imputed <- complete(wynik_imputacji, 1)
+```
+
+Metody modelowe dla zmiennych kategorycznych:
+
+-   education — metoda "polr" (polytominalna regresja logistyczna), odpowiednia dla zmiennych uporządkowanych kategorycznych.
+
+-   BPMeds — metoda "logreg" (regresja logistyczna) dla zmiennej binarnej.
+
+-   cigsPerDay, totChol, BMI, heartRate, glucose — metoda "pmm" (predictive mean matching), pozwalająca na imputację realistycznych wartości na podstawie najbliższych obserwacji.
+
+Metody predykcyjne dopasowane do zmiennych ciągłych:
+
+-   cigsPerDay, totChol, BMI, heartRate, glucose — metoda "pmm" (predictive mean matching), pozwalająca na imputację realistycznych wartości na podstawie najbliższych obserwacji.
+
+### Imputacja walidacji i testu na podstawie train_imputed
+
+Kontynuując proces imputacji te same reguły i parametry imputacji, które zostały nauczone na zbiorze treningowym (`wynik_imputacji`), zostały zastosowane do zbioru testowego (`test`). Oznacza to, że brakujące dane w `test` zostały uzupełnione w sposób spójny z tym, jak potraktowano braki w danych treningowych.
+
+Funkcja `mice.mids` wykorzystuje już wytrenowany model imputacji (`obj = wynik_imputacji`) do imputacji nowych danych (`newdata = test`). Następnie, podobnie jak dla zbioru treningowego, pierwszy z zaimputowanych zbiorów testowych został wybrany jako kompletny zbiór (`test_imputed`).
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+# Imputacja dla zbioru testowego
+test_imputed_mids <- suppressMessages(mice::mice.mids(obj = wynik_imputacji, newdata = test))
+test_imputed <- complete(test_imputed_mids, 1) # wybieramy pierwszy zestaw imputacji
+```
+
+### Podsumowanie metod imputacji dla train
+
+```{r}
+methods_df <- data.frame(
+  Variable = names(wynik_imputacji$method),
+  Imputation_Method = unname(wynik_imputacji$method),
+  stringsAsFactors = FALSE
+)
+
+predictor_df <- as.data.frame(wynik_imputacji$predictorMatrix)
+predictor_df$Variable <- rownames(predictor_df)
+
+predictor_long <- predictor_df %>%
+  pivot_longer(-Variable, names_to = "Predictor", values_to = "Used") %>%
+  filter(Used == 1) %>%
+  select(-Used) %>%
+  group_by(Variable) %>%
+  summarise(Predictors = paste(Predictor, collapse = ", ")) %>%
+  ungroup()
+
+summary_table <- methods_df %>%
+  left_join(predictor_long, by = "Variable") %>%
+  mutate(Predictors = ifelse(is.na(Predictors), "-", Predictors))
+
+summary_table %>%
+  kable(format = "html", caption = "Podsumowanie metod imputacji i użytych predyktorów") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  column_spec(1, bold = TRUE, color = "navy") %>%
+  column_spec(2, color = "darkgreen") %>%
+  column_spec(3, color = "darkred", italic = TRUE)
+```
+
+Predyktory:
+
+-   education jest imputowane za pomocą BMI,
+
+-   cigsPerDay i totChol jest imputowane na podstawie glucose,
+
+-   dla BPMeds wykorzystane zostały male oraz age,
+
+-   najwiecej predyktorów wykorzystuje imputacja zmiennej BMI, ponieważ: prevalentStroke, diaBP oraz zmienną wynikową TenYearCHD
+
+### Sprawdzenie czy po imputacji nie ma braków
+
+```{r, echo=TRUE}
+any(is.na(train_imputed))
+any(is.na(test_imputed))
+```
+
+Po zastosowaniu imputacji nie występują żadne braki w danych.
+
+### Wizualizacja imputacji
+
+```{r}
+stripplot(wynik_imputacji, pch = 20, cex = 1.2)
+```
+
+Stripplot wizualizuje rozkład obserwowanych i imputowanych wartości dla każdej zmiennej w różnych zestawach imputacji. Na tych wykresach:
+
+-   Niebieskie punkty reprezentują obserwowane dane.
+
+-   Czerwone punkty (lub bardziej widoczne na wykresie: ciemnoniebieskie z czerwonawym odcieniem) reprezentują imputowane dane.
+
+-   Oś X (0 do 5) reprezentuje numer imputacji (`m = 5` zestawów imputacji). Kolumna "0" to dane oryginalne (obserwowane), a kolumny "1" do "5" to pięć zestawów imputacji.
+
+Stripplot ogólnie potwierdza dobrą jakość imputacji dla większości zmiennych, gdzie braki danych zostały uzupełnione (`totChol`, `BMI`, `heartRate`, `glucose`). Najważniejszym wyjątkiem jest **`cigsPerDay`**, gdzie na wykresie wynik wygląda tak jakby imputacja generowała. Poniżej jednak znajduje się wizualizacja wartości minimalnych dla każdej iteracji i w każdym przypadku jest to $0$. Zmienne `age`, `sysBP` i `diaBP` nie miały braków, więc nie były imputowane.
+
+```{r}
+for (i in 1:wynik_imputacji$m) {
+     cat("Imputation", i, "min cigsPerDay:", min(wynik_imputacji$imp$cigsPerDay[[i]]), "\n")
+ }
+```
+
+```{r}
+densityplot(wynik_imputacji)
+```
+
+Wykresy gęstości są kluczowe do oceny, czy rozkład imputowanych danych (różowe linie) jest zgodny z rozkładem obserwowanych danych (gruba, niebieska linia). Idealnie, po imputacji, rozkłady imputowanych wartości powinny pokrywać się lub być bardzo zbliżone do rozkładu obserwowanych danych, co sugerowałoby, że proces imputacji prawidłowo odwzorował strukturę danych.
+
+Ogólne wnioski:
+
+-   Dla większości zmiennych (`totChol`, `BMI`, `glucose`), imputacja wydaje się działać dobrze, generując wartości o rozkładach zbliżonych do obserwowanych.
+
+-   Wykres zmiennej `cigsPerDay` daje mylne wrażenie, że imputacja generuje wartości ujemne, lecz wynik powyżej wskazuje na to, że dla każdej iteracji wartość minimalna wynosiła $0$. Potwierdza to poprawność zastosowanych imputacji.
+
+## Winsoryzacja outlierów
+
+```{r}
+train_mice <- train_imputed
+test_mice <- test_imputed
+train_mice_winsorized <- train_mice
+numeric_vars_for_winsorization <- c("age", "cigsPerDay", "totChol", "diaBP", "sysBP", "BMI", "heartRate", "glucose")
+
+# Funkcja winsoryzacji, która używa zdefiniowanych progów
+winsorize_with_limits <- function(x, lower, upper) {
+  x[x < lower] <- lower
+  x[x > upper] <- upper
+  return(x)
+}
+
+winsor_limits <- lapply(train_mice[numeric_vars_for_winsorization], 
+                       function(x) quantile(x, probs = c(0.05, 0.95), na.rm = TRUE))
+
+for (col in numeric_vars_for_winsorization) {
+  limits <- winsor_limits[[col]]
+  train_mice_winsorized[[col]] <- winsorize_with_limits(train_mice[[col]], limits[1], limits[2])
+}
+
+# Użycie tych samych progów do winsoryzacji testu
+test_mice_winsorized <- test_mice
+
+for (col in numeric_vars_for_winsorization) {
+  limits <- winsor_limits[[col]]
+  test_mice_winsorized[[col]] <- winsorize_with_limits(test_mice[[col]], limits[1], limits[2])
+}
+```
+
+Została przeprowadzona winsoryzacja wybranych zmiennych numerycznych ("age", "cigsPerDay", "totChol", "diaBP", "sysBP", "BMI", "heartRate", "glucose") zarówno dla zbioru danych treningowych, jak i testowych.
+
+Operacja ta polegała na ograniczeniu wpływu wartości odstających (outlierów). Wartości zmiennych, które znajdowały się poniżej 5. percentyla, zostały zastąpione wartością 5. percentyla. Analogicznie, wartości powyżej 95. percentyla zostały zastąpione wartością 95. percentyla. Co istotne, progi winsoryzacji (czyli wartości 5. i 95. percentyla) zostały obliczone wyłącznie na podstawie zbioru treningowego, a następnie zastosowane konsekwentnie do obu zbiorów danych – treningowego i testowego.
+
+Celem winsoryzacji jest zwiększenie stabilności modeli statystycznych lub uczenia maszynowego poprzez redukcję wpływu ekstremalnych wartości, które mogłyby zaburzać analizę lub uczenie się algorytmu. Dzięki temu, model jest mniej wrażliwy na pojedyncze, nietypowe obserwacje, co może prowadzić do lepszej generalizacji na nowe dane.
+
+## One-hot encoding dla `education`
+
+```{r}
+#education na factor
+train_mice_winsorized$education <- as.factor(train_mice_winsorized$education)
+test_mice_winsorized$education <- as.factor(test_mice_winsorized$education)
+
+
+# Usuniecie zmiennej celu z danych wejściowych do dummyVars
+train_no_target <- train_mice_winsorized[, setdiff(names(train_mice_winsorized), "TenYearCHD")]
+test_no_target <- test_mice_winsorized[, setdiff(names(test_mice_winsorized), "TenYearCHD")]
+
+# Stworzenie dummyVars na zbiorze bez celu
+dummies <- dummyVars(" ~ .", data = train_no_target, fullRank = TRUE)
+
+# Zastosowanie one-hot encoding
+train_encoded <- predict(dummies, newdata = train_no_target) %>% as.data.frame()
+test_encoded <- predict(dummies, newdata = test_no_target) %>% as.data.frame()
+
+# Dodaanie z powrotem zmienną celu
+train_encoded$TenYearCHD <- train_mice_winsorized$TenYearCHD
+test_encoded$TenYearCHD <- test_mice_winsorized$TenYearCHD
+```
+
+Zmienna kategoryczna `education`została zakodowana zero-jedynkowo (One-Hot Encoding). Oznacza to, że każda kategoria zmiennej kategorialnej została zamieniona na oddzielną zmienną binarną (0 lub 1). Proces kodowania został oparty wyłącznie na zbiorze treningowym, a następnie zastosowany do obu zbiorów (treningowego i testowego), by zachować spójność. Zmienna docelowa została tymczasowo usunięta przed kodowaniem, a następnie przywrócona.
+
+Celem było przygotowanie danych do modelowania. Wiele algorytmów uczenia maszynowego wymaga, aby wszystkie zmienne wejściowe były numeryczne, a One-Hot Encoding jest typową metodą przekształcania zmiennych kategorialnych w ten format.
+
+## Skalowanie zmiennych
+
+```{r}
+# Skalowanie na podstawie tylko zbioru treningowego
+preproc <- preProcess(train_encoded, method = c("center", "scale"))
+
+train_scaled <- predict(preproc, train_encoded)
+test_scaled <- predict(preproc, test_encoded)
+
+#Dodanie zmiennej celu
+train_scaled$TenYearCHD <- as.factor(train_mice_winsorized$TenYearCHD)
+test_scaled$TenYearCHD <- as.factor(test_mice_winsorized$TenYearCHD)
+```
+
+Proces skalowania, w tym przypadku centrowanie i skalowanie, polega na przekształceniu zmiennych w taki sposób, aby ich średnia wynosiła zero, a odchylenie standardowe jeden. Jest to realizowane poprzez odjęcie średniej od każdej wartości, a następnie podzielenie wyniku przez odchylenie standardowe.
+
+Celem tego działania jest standaryzacja zakresu zmiennych, co jest kluczowe dla wielu algorytmów uczenia maszynowego (np. algorytmy oparte na odległości, takie jak SVM, a także sieci neuronowe). Dzięki skalowaniu, żadna zmienna nie dominuje nad innymi ze względu na jej skalę wartości, co może znacząco poprawić wydajność i stabilność procesu modelowania. Co ważne, parametry skalowania (średnie i odchylenia standardowe) zostały obliczone wyłącznie na zbiorze treningowym, a następnie zastosowane do obu zbiorów, co zapobiega wyciekowi informacji z danych testowych.
+
+Na koniec, zmienna docelowa `TenYearCHD` została ponownie dodana do przeskalowanych zbiorów (`train_scaled` i `test_scaled`) i przekształcona na typ faktorowy, co jest odpowiednie dla zmiennej kategorialnej w problemach klasyfikacji.
+
+## SMOTE
+
+```{r}
+table(train_scaled$TenYearCHD)
+
+smote_out <- SMOTE(X = train_scaled[, setdiff(names(train_scaled), "TenYearCHD")],
+                   target = train_scaled$TenYearCHD,
+                   K = 5, dup_size = 4)  
+
+train_balanced <- smote_out$data
+names(train_balanced)[names(train_balanced) == "class"] <- "TenYearCHD"
+train_balanced$TenYearCHD <- as.factor(train_balanced$TenYearCHD)
+
+table(train_balanced$TenYearCHD)
+```
+
+W kolejnym etapie została przeprowadzona operacja balansowania zbioru danych treningowych przy użyciu metody SMOTE (Synthetic Minority Over-sampling Technique).
+
+Na początku, została sprawdzona liczebność klas zmiennej docelowej (`TenYearCHD`) w zbiorze `train_scaled`, co pozwala ocenić ewentualne niezbalansowanie klas.
+
+Następnie, zastosowano algorytm SMOTE. Został on użyty do wygenerowania syntetycznych próbek klasy mniejszościowej (`TenYearCHD`) w zbiorze `train_scaled`. Parametr `K = 5` oznacza, że do generowania nowych próbek wykorzystywano 5 najbliższych sąsiadów, natomiast `dup_size = 4` wskazuje, że dla każdej oryginalnej próbki klasy mniejszościowej zostanie wygenerowanych czterokrotnie więcej syntetycznych próbek. Przed wykonaniem SMOTE, zmienna docelowa została tymczasowo oddzielona od zmiennych predykcyjnych.
+
+Wynikiem działania SMOTE jest nowy, zbalansowany zbiór danych treningowych (`train_balanced`), w którym liczebność klas zmiennej docelowej (`TenYearCHD`) jest bardziej wyrównana. Nazwa zmiennej docelowej została zmieniona z powrotem na `TenYearCHD` (ponieważ SMOTE domyślnie nazywa ją "class") i ponownie przekonwertowana na typ faktorowy. Na koniec, ponownie sprawdzono liczebność klas w zbalansowanym zbiorze, aby potwierdzić efekt operacji.
+
+## Budowa modeli
+
+Każdy z modeli był budowany na podstawie metryki AUC. Po testach dawała ona najlepsze (chociaż wciąż niezbyt zadowalające) wyniki w poprawnej klasyfikacji występowania TenYearCHD. Poniżej znajduje się pięć modeli, z których każdy został najpier przeprowadzony na zbalansowanym zbiorze metodą SMOTE, a potem na niezbalansowanym zbiorze lecz z wykorzystaniem wag.
+
+### Regresja logistyczna
+
+#### na SMOTE
+
+```{r}
+#Rejestracja na 4 rdzeniach
+cl <- makeCluster(4)
+registerDoParallel(cl)
+
+# Kontrola treningu
+fitControl_auc <- trainControl(
+  method = "cv",
+  number = 20,
+  classProbs = TRUE,
+  summaryFunction = prSummary,
+  verboseIter = TRUE,
+  savePredictions = "final",
+  allowParallel = TRUE
+)
+```
+
+```{r}
+# Model bazowy (bez tuningu)
+set.seed(123)
+glmnet_base <- train(
+  TenYearCHD ~ .,
+  data = train_balanced,
+  method = "glmnet",
+  metric = "AUC",
+  trControl = fitControl_auc
+)
+```
+
+```{r}
+# Strojenie modelu
+# Siatka hiperparametrów
+grid_glmnet <- expand.grid(
+  alpha = seq(0, 1, length = 5),
+  lambda = 10^seq(-4, 1, length = 20)
+)
+
+set.seed(123)
+glmnet_tuned <- train(
+  TenYearCHD ~ .,
+  data = train_balanced,
+  method = "glmnet",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  tuneGrid = grid_glmnet
+)
+```
+
+```{r, results='asis'}
+# Pobranie wyniku z modelu bazowego (bez tuningu)
+base_results <- glmnet_base$results
+base_auc <- max(base_results$AUC)
+base_best_row <- base_results[which.max(base_results$AUC), ]
+base_f1 <- base_best_row$F
+base_precision <- base_best_row$Precision
+base_recall <- base_best_row$Recall
+
+# Pobranie wyników z modelu tuned (po tuningu)
+tuned_results <- glmnet_tuned$results
+tuned_auc <- max(tuned_results$AUC)
+tuned_best_row <- tuned_results[which.max(tuned_results$AUC), ]
+tuned_f1 <- tuned_best_row$F
+tuned_precision <- tuned_best_row$Precision
+tuned_recall <- tuned_best_row$Recall
+
+# Stworzenie data frame z wynikami
+comparison_df <- data.frame(
+  Model = c("GLMNet Bazowy (przed tuningiem)", "GLMNet Strojenie (po tuningu)"),
+  AUC = c(base_auc, tuned_auc),
+  F1 = c(base_f1, tuned_f1),
+  Precision = c(base_precision, tuned_precision),
+  Recall = c(base_recall, tuned_recall)
+)
+
+print(comparison_df %>%
+  kable(digits = 4, format = "html", caption = "Porównanie wyników ewaluacji GLMNet przed i po strojeniu (wg AUC)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")))
+```
+
+Tuning modelu GLMNet przyniósł minimalną poprawę metryk (AUC +0.0001, F1 +0.0003), co sugeruje, że domyślne parametry były już dobrze dopasowane. Zysk z tuningu jest marginalny.
+
+```{r}
+# wizualizacja parametrów i wybór najlepszego
+# Dane
+top10 <- glmnet_tuned$results %>%
+  arrange(desc(AUC)) %>%
+  head(10) %>%
+  select(alpha, lambda, F, Precision, Recall, AUC)
+
+# Wyszukanie indeks najlepszego wiersza (największy AUC)
+best_row <- which.max(top10$AUC)
+
+# Tworzenie tabeli z podświetleniem najlepszego wyniku
+top10 %>%
+  kable(digits = 4, format = "html", caption = "Top 10 wyników strojenia modelu glmnet") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(best_row, bold = TRUE, background = "#DFF0D8") 
+```
+
+Ostatecznie wartości użyte do modelu to alpha = 0.75 i lambda = 0.0038
+
+```{r}
+# Wykres AUC dla zbioru treningowego
+ggplot(glmnet_tuned) +
+  labs(title = "AUC dla kombinacji alpha i lambda", x = "log10(lambda)", y = "AUC") +
+  scale_x_continuous(trans = "log10") +
+  theme_minimal()
+```
+
+Wykres pokazuje wpływ parametrów `alpha` (Mixing Percentage) i `lambda` na AUC modelu GLMNet. Oto krótka ocena:
+
+-   Stabilność przy niskim lambda: Dla małych wartości lambda (poniżej \~0.1), AUC pozostaje wysokie i stabilne niezależnie od alpha.
+
+-   Gwałtowny spadek AUC: Przy log10(lambda) ≈ -0.5 do 0.5 następuje nagły spadek AUC dla wszystkich wartości alpha — oznacza to nadmierną penalizację.
+
+-   Najlepsze wyniki: Uzyskiwane są dla małych lambda i alpha w zakresie 0–0.25, co sugeruje lepsze dopasowanie przy mniejszym udziale L1 (bliżej Ridge).
+
+Model jest wrażliwy na lambda – zbyt wysokie wartości drastycznie pogarszają jakość. Alpha ma mniejszy wpływ, ale lepsze AUC uzyskiwane jest dla niższych mixingów.
+
+```{r}
+# Predykcja prawdopodobieństw
+test_probs <- predict(glmnet_tuned, newdata = test_scaled, type = "prob")[, "X1"]
+
+roc_test <- roc(response = test_scaled$TenYearCHD, 
+                predictor = test_probs, 
+                levels = levels(test_scaled$TenYearCHD))
+plot(roc_test, col = "blue", main = "Krzywa ROC – Testowy (GLMNet)")
+cat("AUC (test):", auc(roc_test), "\n")
+```
+
+Krzywa wyraźnie odchyla się od linii losowej (szarej przekątnej) w kierunku lewego górnego rogu. Oznacza to, że model GLMNet jest użyteczny i ma zdolność do rozróżniania między klasami. Im dalej od linii losowej, tym lepiej model radzi sobie z predykcją.
+
+```{r}
+# Przewidywania na zbiorze testowym
+test_preds <- predict(glmnet_tuned, newdata = test_scaled, type = "raw")
+
+# Macierz pomyłek
+cm_test <- confusionMatrix(test_preds, test_scaled$TenYearCHD, positive = "X1")
+
+# confusion matrix do formatu data.frame do ggplot
+cm_df <- as.data.frame(cm_test$table)
+
+# Zmieniana nazw kolumn dla przejrzystości
+colnames(cm_df) <- c("Prawdziwa", "Przewidziana", "Liczba")
+
+ggplot(data = cm_df, aes(x = Przewidziana, y = Prawdziwa, fill = Liczba)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Liczba), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1") +
+  labs(
+    title = "Macierz pomyłek (zbiór testowy)",
+    x = "Przewidziana etykieta",
+    y = "Rzeczywista etykieta"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+Model poprawnie sklasyfikował 113 instancji klasy **1** (prawdziwie pozytywne), ale niestety 80 instancji tej samej klasy zostało błędnie zidentyfikowanych jako klasa 0 (fałszywie negatywne). Jednocześnie, aż 302 instancje klasy 0 zostały błędnie zaklasyfikowane jako 1 (fałszywie pozytywne).
+
+Model ma bardzo niską czułość (recall) dla klasy 1 (poprawnie wykrywa tylko 113 z 113+80 = 193 rzeczywistych przypadków klasy 1) i jednocześnie wysoki odsetek fałszywie pozytywnych wyników (predykcje klasy 1, które w rzeczywistości są klasą 0). W kontekście niezbalansowanego zbioru i celu wykrywania klasy 1, ten model jest słaby. Konieczna jest optymalizacja w celu poprawy wykrywalności klasy 1 i zmniejszenia liczby fałszywych alarmów.
+
+```{r}
+# Wyciąganie współczynników dla najlepszego lambda
+best_lambda <- glmnet_tuned$bestTune$lambda
+coefs <- coef(glmnet_tuned$finalModel, s = best_lambda)
+coef_df <- as.data.frame(as.matrix(coefs))
+coef_df$Variable <- rownames(coef_df)
+colnames(coef_df)[1] <- "Coefficient"
+coef_df <- coef_df[coef_df$Coefficient != 0, ]
+
+# Wykres ważności
+ggplot(coef_df, aes(x = reorder(Variable, abs(Coefficient)), y = Coefficient)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Istotność zmiennych (GLMNet)", x = "Zmienna", y = "Współczynnik")
+```
+
+Zmienna "age" (wiek) ma największy pozytywny współczynnik (około 0.6), co wskazuje na silny pozytywny wpływ na zmienną zależną. "(Intercept)" (wyraz wolny) posiada duży negatywny współczynnik (około -0.35).
+
+Zmienne "sysBP" (skurczowe ciśnienie krwi) oraz "cigsPerDay" (liczba papierosów dziennie) również wykazują znaczące pozytywne współczynniki, odpowiednio około 0.35 i 0.30, co oznacza ich silny pozytywny wpływ. "Male.1" (płeć męska) i "diabetes.1" (cukrzyca) posiadają mniejsze, ale dodatnie współczynniki, w zakresie 0.10-0.15.
+
+Zmienna "heartRate" (częstość akcji serca) posiada niewielki negatywny współczynnik (około -0.05). "PrevalentStroke.1" (występujący udar), "education.Q" (edukacja.Q) i "prevalentHyp.1" (występujące nadciśnienie) mają małe pozytywne współczynniki, bliskie zeru. "Education.C" (edukacja.C) wykazuje niewielki negatywny współczynnik (około -0.05). Zmienna "glucose" (glukoza) ma współczynnik bliski zeru.
+
+Podsumowując, w modelu GLMNet wiek, skurczowe ciśnienie krwi i liczba papierosów dziennie są kluczowymi czynnikami o pozytywnym wpływie, podczas gdy częstość akcji serca i wykształcenie C mają niewielki negatywny wpływ.
+
+#### z wagami
+
+```{r}
+model_weights <- ifelse(train_scaled$TenYearCHD == "X1", 5, 1)
+```
+
+```{r}
+set.seed(123)
+glmnet_weighted_base <- train(
+  TenYearCHD ~ .,
+  data = train_scaled,
+  method = "glmnet",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  weights = model_weights
+)
+```
+
+```{r}
+# Strojenie modelu
+set.seed(123)
+glmnet_weighted_tuned <- train(
+  TenYearCHD ~ .,
+  data = train_scaled,
+  method = "glmnet",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  tuneGrid = grid_glmnet,
+  weights = model_weights
+)
+```
+
+```{r, results='asis'}
+# Pobranie wyniku z modelu bazowego (bez tuningu) z wagami
+base_results_weighted <- glmnet_weighted_base$results
+base_auc_weighted <- max(base_results_weighted$AUC)
+base_best_row_weighted <- base_results_weighted[which.max(base_results_weighted$AUC), ]
+base_f1_weighted <- base_best_row_weighted$F
+base_precision_weighted <- base_best_row_weighted$Precision
+base_recall_weighted <- base_best_row_weighted$Recall
+
+# Pobranie wyników z modelu tuned (po tuningu) z wagami
+tuned_results_weighted <- glmnet_weighted_tuned$results
+tuned_auc_weighted <- max(tuned_results_weighted$AUC)
+tuned_best_row_weighted <- tuned_results_weighted[which.max(tuned_results_weighted$AUC), ]
+tuned_f1_weighted <- tuned_best_row_weighted$F
+tuned_precision_weighted <- tuned_best_row_weighted$Precision
+tuned_recall_weighted <- tuned_best_row_weighted$Recall
+
+# Stworzenie data frame z wynikami porównawczymi dla modeli z wagami
+comparison_df_weighted <- data.frame(
+  Model = c("GLMNet Bazowy (przed tuningiem, z wagami)", "GLMNet Strojenie (po tuningu, z wagami)"),
+  AUC = c(base_auc_weighted, tuned_auc_weighted),
+  F1 = c(base_f1_weighted, tuned_f1_weighted),
+  Precision = c(base_precision_weighted, tuned_precision_weighted),
+  Recall = c(base_recall_weighted, tuned_recall_weighted)
+)
+
+
+print(comparison_df_weighted %>%
+  kable(digits = 4, format = "html", caption = "Porównanie wyników ewaluacji GLMNet przed i po strojeniu (z wagami, wg AUC)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")))
+```
+
+Tuning modelu GLMNet (z uwzględnieniem wag) nie przyniósł istotnej poprawy – AUC wzrosło o tylko 0.0001, natomiast F1, Precision i Recall nieznacznie spadły. Model był już bardzo dobrze dopasowany przed tuningiem. Zmiany są pomijalne.
+
+```{r}
+# wizualizacja parametrów i wybór najlepszego dla modelu z wagami
+# Dane
+top10_weighted <- glmnet_weighted_tuned$results %>%
+  arrange(desc(AUC)) %>%
+  head(10) %>%
+  select(alpha, lambda, F, Precision, Recall, AUC)
+
+# Wyszukanie indeks najlepszego wiersza (największy AUC)
+best_row_weighted <- which.max(top10_weighted$AUC)
+
+# Tworzenie tabeli z podświetleniem najlepszego wyniku
+top10_weighted %>%
+  kable(digits = 4, format = "html", caption = "Top 10 wyników strojenia modelu glmnet z wagami") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(best_row_weighted, bold = TRUE, background = "#DFF0D8") 
+```
+
+Ostatecznie wartości użyte do modelu to alpha = 0.5 i lambda = 0.0234
+
+```{r}
+# Wykres AUC dla zbioru treningowego z wagami
+ggplot(glmnet_weighted_tuned) +
+  labs(title = "AUC dla kombinacji alpha i lambda (model z wagami)", x = "log10(lambda)", y = "AUC") +
+  scale_x_continuous(trans = "log10") +
+  theme_minimal()
+```
+
+Wykres przedstawia AUC w zależności od `lambda` i `alpha` dla modelu GLMNet z uwzględnieniem wag. Oto zwięzła ocena:
+
+-   Wysokie AUC dla małych lambda: Dla wartości lambda \< \~0.1 AUC utrzymuje się na bardzo wysokim poziomie niezależnie od alpha (Mixing Percentage).
+
+-   Nagły spadek AUC: Podobnie jak wcześniej, zbyt duże lambda powodują gwałtowny spadek AUC – model traci zdolność predykcyjną.
+
+-    Stabilność Ridge: Wartości alpha = 0 (czysty Ridge) wykazują największą stabilność nawet przy większych lambda.
+
+Wagi nie zmieniają ogólnego wzorca — najlepsze rezultaty daje małe lambda i niskie alpha. Model jest nadal bardzo czuły na penalizację.
+
+```{r}
+# Predykcja prawdopodobieństw na zbiorze testowym dla modelu z wagami
+test_probs_weighted <- predict(glmnet_weighted_tuned, newdata = test_scaled, type = "prob")[, "X1"]
+
+roc_test_weighted <- roc(response = test_scaled$TenYearCHD,
+                         predictor = test_probs_weighted,
+                         levels = levels(test_scaled$TenYearCHD))
+plot(roc_test_weighted, col = "blue", main = "Krzywa ROC – Testowy (GLMNet z wagami)")
+cat("AUC (test, wagi):", auc(roc_test_weighted), "\n")
+```
+
+Krzywa ROC dla modelu Testowego (GLMNet z wagami) prezentuje się bardzo podobnie do poprzedniej. Wyraźnie odcina się od linii losowej, biegnąc w kierunku lewego górnego rogu. Sugeruje to, że wariant modelu GLMNet z wagami również ma dobrą zdolność do rozróżniania klas, a jego wydajność jest znacząco lepsza niż przypadku losowego. Wizualnie, AUC jest wysokie, co wskazuje na dobrą jakość predykcyjną modelu.
+
+```{r}
+# Przewidywania na zbiorze testowym dla modelu z wagami
+test_preds_weighted <- predict(glmnet_weighted_tuned, newdata = test_scaled, type = "raw")
+
+# Macierz pomyłek dla modelu z wagami
+cm_test_weighted <- confusionMatrix(test_preds_weighted, test_scaled$TenYearCHD, positive = "X1")
+
+# confusion matrix do formatu data.frame do ggplot
+cm_df_weighted <- as.data.frame(cm_test_weighted$table)
+
+# Zmieniana nazw kolumn dla przejrzystości
+colnames(cm_df_weighted) <- c("Prawdziwa", "Przewidziana", "Liczba")
+
+ggplot(data = cm_df_weighted, aes(x = Przewidziana, y = Prawdziwa, fill = Liczba)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Liczba), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1") +
+  labs(
+    title = "Macierz pomyłek (zbiór testowy, model z wagami)",
+    x = "Przewidziana etykieta",
+    y = "Rzeczywista etykieta"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+Model prawidłowo zidentyfikował 111 instancji klasy 1 (prawdziwie pozytywne), jednak 82 przypadki klasy 1 zostały błędnie sklasyfikowane jako 0 (fałszywie negatywne). Co więcej, 288 instancji klasy 0 zostało niepoprawnie oznaczonych jako 1 (fałszywie pozytywne).
+
+Model nadal charakteryzuje się niską czułością (recall) dla klasy 1 (wykrywa 111 z 111+82 = 193 rzeczywistych przypadków klasy 1) oraz znaczną liczbą fałszywie pozytywnych wyników. W porównaniu do poprzedniego modelu, niewiele się zmieniło w kwestii wykrywalności klasy 1, a fałszywe pozytywy są wciąż na wysokim poziomie. Jest to problematyczne, biorąc pod uwagę cel wykrywania klasy 1 w niezbalansowanym zbiorze. Należy kontynuować prace nad poprawą skuteczności dla klasy pozytywnej.
+
+```{r, results='asis'}
+# Wyciąganie współczynników dla najlepszego lambda z modelu z wagami
+best_lambda_weighted <- glmnet_weighted_tuned$bestTune$lambda
+coefs_weighted <- coef(glmnet_weighted_tuned$finalModel, s = best_lambda_weighted)
+coef_df_weighted <- as.data.frame(as.matrix(coefs_weighted))
+coef_df_weighted$Variable <- rownames(coef_df_weighted)
+colnames(coef_df_weighted)[1] <- "Coefficient"
+coef_df_weighted <- coef_df_weighted[coef_df_weighted$Coefficient != 0, ]
+
+# Wykres ważności dla modelu z wagami
+ggplot(coef_df_weighted, aes(x = reorder(Variable, abs(Coefficient)), y = Coefficient)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Istotność zmiennych (GLMNet z wagami)", x = "Zmienna", y = "Współczynnik")
+```
+
+Zmienna "age" (wiek) ma największy pozytywny współczynnik, co wskazuje na silny pozytywny wpływ na zmienną zależną. "(Intercept)" (wyraz wolny) posiada duży negatywny współczynnik.
+
+Zmienne "sysBP" (skurczowe ciśnienie krwi) oraz "cigsPerDay" (liczba papierosów dziennie) również wykazują pozytywne współczynniki, co oznacza ich pozytywny wpływ. "Male.1" (płeć męska), "diabetes.1" (cukrzyca) i "prevalentHyp.1" (występujące nadciśnienie) posiadają mniejsze, ale dodatnie współczynniki.
+
+Zmienne "education.Q" (edukacja.Q) i "prevalentStroke.1" (występujący udar) mają bardzo małe, dodatnie współczynniki, bliskie zeru. Natomiast "education.C" (edukacja.C) wykazuje niewielki negatywny współczynnik.
+
+Podsumowując, w modelu GLMNet z wagami wiek, skurczowe ciśnienie krwi i liczba papierosów dziennie są kluczowymi czynnikami o pozytywnym wpływie, podczas gdy wykształcenie C ma marginalny wpływ negatywny.
+
+### **Drzewo decyzyjne**
+
+#### na SMOTE
+
+```{r}
+# Kontrola treningu
+fitControl_auc <- trainControl(
+  method = "cv",
+  number = 20,
+  classProbs = TRUE,
+  summaryFunction = prSummary,
+  verboseIter = TRUE,
+  savePredictions = "final",
+  allowParallel = TRUE
+)
+```
+
+```{r}
+# Model bazowy (bez tuningu)
+set.seed(123)
+tree_base <- train(
+  TenYearCHD ~ .,
+  data = train_balanced,
+  method = "rpart",
+  metric = "AUC",
+  trControl = fitControl_auc
+)
+```
+
+```{r}
+# Strojenie modelu
+# Siatka hiperparametrów
+grid_tree <- expand.grid(cp = seq(0.001, 0.1, length = 10))
+
+set.seed(123)
+tree_tuned <- train(
+  TenYearCHD ~ .,
+  data = train_balanced,
+  method = "rpart",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  tuneGrid = grid_tree
+)
+```
+
+```{r, results='asis'}
+# Pobranie wyniku z modelu bazowego (bez tuningu)
+base_results_tree <- tree_base$results
+base_auc_tree <- max(base_results_tree$AUC)
+base_best_row_tree <- base_results_tree[which.max(base_results_tree$AUC), ]
+base_f1_tree <- base_best_row_tree$F
+base_precision_tree <- base_best_row_tree$Precision
+base_recall_tree <- base_best_row_tree$Recall
+
+# Pobranie wyników z modelu tuned (po tuningu)
+tuned_results_tree <- tree_tuned$results
+tuned_auc_tree <- max(tuned_results_tree$AUC)
+tuned_best_row_tree <- tuned_results_tree[which.max(tuned_results_tree$AUC), ]
+tuned_f1_tree <- tuned_best_row_tree$F
+tuned_precision_tree <- tuned_best_row_tree$Precision
+tuned_recall_tree <- tuned_best_row_tree$Recall
+
+# Stworzenie data frame z wynikami
+comparison_df_tree <- data.frame(
+  Model = c("Drzewo Decyzyjne Bazowe (przed tuningiem)", "Drzewo Decyzyjne Strojenie (po tuningu)"),
+  AUC = c(base_auc_tree, tuned_auc_tree),
+  F1 = c(base_f1_tree, tuned_f1_tree),
+  Precision = c(base_precision_tree, tuned_precision_tree),
+  Recall = c(base_recall_tree, tuned_recall_tree)
+)
+
+
+print(comparison_df_tree %>%
+  kable(digits = 4, format = "html", caption = "Porównanie wyników ewaluacji Drzewa Decyzyjnego przed i po strojeniu (wg AUC)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")))
+```
+
+Tuning drzewa decyzyjnego znacząco poprawił jakość modelu — AUC wzrosło z 0.4450 do 0.7885, a F1 z 0.6798 do 0.7875. To duży skok, wskazujący, że model bazowy był niedopasowany, a tuning istotnie zwiększył jego skuteczność.
+
+```{r}
+# wizualizacja parametrów i wybór najlepszego
+# Dane
+top10_tree <- tree_tuned$results %>%
+  arrange(desc(AUC)) %>%
+  head(10) %>%
+  select(cp, F, Precision, Recall, AUC)
+
+# Wyszukanie indeks najlepszego wiersza (największy AUC)
+best_row_tree <- which.max(top10_tree$AUC)
+
+# Tworzenie tabeli z podświetleniem najlepszego wyniku
+top10_tree %>%
+  kable(digits = 4, format = "html", caption = "Top 10 wyników strojenia modelu drzewa decyzyjnego") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(best_row_tree, bold = TRUE, background = "#DFF0D8")
+```
+
+```{r}
+# Wykres AUC dla zbioru treningowego
+ggplot(tree_tuned) +
+  labs(title = "AUC dla parametru cp", x = "Complexity Parameter (cp)", y = "AUC") +
+  theme_minimal()
+```
+
+Wykres przedstawia zależność między parametrem złożoności drzewa (`cp`) a błędem modelu.
+
+-   Trend: Im mniejszy `cp`, tym niższy błąd — wskazuje to, że bardziej złożone drzewa (niższe `cp`) lepiej dopasowują dane.
+
+-   Załamanie: Przy `cp < 0.025` błąd gwałtownie maleje, a poniżej `cp ≈ 0.04` stabilizuje się.
+
+-   Wniosek praktyczny: Optymalny zakres cp to ok. 0.01–0.04 — niższe wartości pozwalają uzyskać niski błąd bez dalszych korzyści z większej złożoności.
+
+Mniejsze wartości `cp` wyraźnie poprawiają jakość modelu — tuning `cp` był kluczowy dla wzrostu skuteczności drzewa.
+
+```{r}
+# Predykcja prawdopodobieństw
+test_probs_tree <- predict(tree_tuned, newdata = test_scaled, type = "prob")[, "X1"]
+
+roc_test_tree <- roc(response = test_scaled$TenYearCHD,
+                   predictor = test_probs_tree,
+                   levels = levels(test_scaled$TenYearCHD))
+plot(roc_test_tree, col = "blue", main = "Krzywa ROC – Testowy (Drzewo Decyzyjne)")
+cat("AUC (test):", auc(roc_test_tree), "\n")
+```
+
+Krzywa ROC dla Testowego (Drzewo Decyzyjne) pokazuje dobrą zdolność predykcyjną, wyraźnie odchylając się od linii losowej (przekątnej). AUC jest wizualnie wysokie, co wskazuje na to, że model Drzewa Decyzyjnego dobrze rozróżnia między klasami, choć może być minimalnie niższe niż w poprzednich przypadkach GLMNet, szczególnie w obszarze wyższej swoistości (prawy górny róg wykresu). Model jest użyteczny i lepszy niż predykcja losowa.
+
+```{r}
+# Przewidywania na zbiorze testowym
+test_preds_tree <- predict(tree_tuned, newdata = test_scaled, type = "raw")
+
+# Macierz pomyłek
+cm_test_tree <- confusionMatrix(test_preds_tree, test_scaled$TenYearCHD, positive = "X1")
+
+# confusion matrix do formatu data.frame do ggplot
+cm_df_tree <- as.data.frame(cm_test_tree$table)
+
+# Zmieniana nazw kolumn dla przejrzystości
+colnames(cm_df_tree) <- c("Prawdziwa", "Przewidziana", "Liczba")
+
+ggplot(data = cm_df_tree, aes(x = Przewidziana, y = Prawdziwa, fill = Liczba)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Liczba), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1") +
+  labs(
+    title = "Macierz pomyłek (zbiór testowy)",
+    x = "Przewidziana etykieta",
+    y = "Rzeczywista etykieta"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+Model poprawnie zidentyfikował 125 instancji klasy 1 (prawdziwie pozytywne), co jest poprawą. Mniej przypadków klasy 1 (68) zostało błędnie sklasyfikowanych jako 0 (fałszywie negatywne) w porównaniu do poprzednich wyników. Nadal jednak 198 instancji klasy 0 zostało niepoprawnie oznaczonych jako 1 (fałszywie pozytywne), co jest spadkiem.
+
+Widoczna jest poprawa czułości (recall) dla klasy 1 (model wykrywa 125 z 125+68 = 193 rzeczywistych przypadków klasy 1), co jest krokiem w dobrym kierunku dla niezbalansowanego zbioru. Jednakże, precyzja dla klasy 1 (ile z predykcji klasy 1 jest faktycznie klasy 1) wciąż jest osłabiona przez stosunkowo dużą liczbę fałszywie pozytywnych wyników (198). Model jest skuteczniejszy w znajdowaniu pozytywnych przypadków, ale nadal generuje sporo "fałszywych alarmów". Warto rozważyć, czy akceptowalny jest taki kompromis między czułością a precyzją.
+
+```{r}
+# Wykres ważności zmiennych
+plot(varImp(tree_tuned), main = "Istotność zmiennych (Drzewo Decyzyjne)")
+```
+
+Zmienna "age" (wiek) jest zdecydowanie najważniejsza, osiągając wartość bliską 100. Na drugim miejscu plasuje się "sysBP" (skurczowe ciśnienie krwi) z wartością około 70. "HeartRate" (częstość akcji serca) i "diaBP" (rozkurczowe ciśnienie krwi) również wykazują wysoką istotność, w zakresie 55-60. "CigsPerDay" (liczba papierosów dziennie) ma istotność około 50.
+
+Zmienne takie jak "male.1" (płeć męska), "totChol" (całkowity cholesterol), "glucose" (poziom glukozy), "prevalentHyp.1" (występujące nadciśnienie) i "BMI" (wskaźnik masy ciała) wykazują umiarkowaną istotność, w zakresie 30-40.
+
+Niższą istotność, w zakresie 5-25, prezentują "currentSmoker.1" (aktualny palacz), "education.Q" (edukacja.Q), "education.L" (edukacja.L) i "education.C" (edukacja.C).
+
+Najniższą istotność, bliską zera, wykazują "diabetes.1" (cukrzyca), "BPMeds.1" (leki na ciśnienie krwi) i "prevalentStroke.1" (występujący udar).
+
+Podsumowując, w tym modelu drzewa decyzyjnego wiek, ciśnienie skurczowe i częstość akcji serca są kluczowymi predyktorami, podczas gdy czynniki takie jak cukrzyca, leki na ciśnienie czy przebyty udar mają marginalne znaczenie.
+
+#### z wagami
+
+```{r}
+set.seed(123)
+tree_weighted_base <- train(
+  TenYearCHD ~ .,
+  data = train_scaled,
+  method = "rpart",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  weights = model_weights
+)
+```
+
+```{r}
+# Strojenie modelu
+set.seed(123)
+tree_weighted_tuned <- train(
+  TenYearCHD ~ .,
+  data = train_scaled,
+  method = "rpart",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  tuneGrid = grid_tree,
+  weights = model_weights
+)
+```
+
+Tuning drzewa decyzyjnego z wagami nie poprawił wyników – AUC spadło z 0.6942 do 0.6702, a F1, precision i recall nieznacznie się pogorszyły.
+
+W przeciwieństwie do modelu bez wag, tutaj tuning obniżył jakość predykcji – prawdopodobnie model był już dobrze dopasowany przed tuningiem lub tuning prowadził do przeuczenia / zbyt dużego uproszczenia.
+
+```{r, results='asis'}
+# Pobranie wyniku z modelu bazowego (bez tuningu) z wagami
+base_results_weighted_tree <- tree_weighted_base$results
+base_auc_weighted_tree <- max(base_results_weighted_tree$AUC)
+base_best_row_weighted_tree <- base_results_weighted_tree[which.max(base_results_weighted_tree$AUC), ]
+base_f1_weighted_tree <- base_best_row_weighted_tree$F
+base_precision_weighted_tree <- base_best_row_weighted_tree$Precision
+base_recall_weighted_tree <- base_best_row_weighted_tree$Recall
+
+# Pobranie wyników z modelu tuned (po tuningu) z wagami
+tuned_results_weighted_tree <- tree_weighted_tuned$results
+tuned_auc_weighted_tree <- max(tuned_results_weighted_tree$AUC)
+tuned_best_row_weighted_tree <- tuned_results_weighted_tree[which.max(tuned_results_weighted_tree$AUC), ]
+tuned_f1_weighted_tree <- tuned_best_row_weighted_tree$F
+tuned_precision_weighted_tree <- tuned_best_row_weighted_tree$Precision
+tuned_recall_weighted_tree <- tuned_best_row_weighted_tree$Recall
+
+# Stworzenie data frame z wynikami porównawczymi dla modeli z wagami
+comparison_df_weighted_tree <- data.frame(
+  Model = c("Drzewo Decyzyjne Bazowe (przed tuningiem, z wagami)", "Drzewo Decyzyjne Strojenie (po tuningu, z wagami)"),
+  AUC = c(base_auc_weighted_tree, tuned_auc_weighted_tree),
+  F1 = c(base_f1_weighted_tree, tuned_f1_weighted_tree),
+  Precision = c(base_precision_weighted_tree, tuned_precision_weighted_tree),
+  Recall = c(base_recall_weighted_tree, tuned_recall_weighted_tree)
+)
+
+print(comparison_df_weighted_tree %>%
+  kable(digits = 4, format = "html", caption = "Porównanie wyników ewaluacji Drzewa Decyzyjnego przed i po strojeniu (z wagami, wg AUC)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")))
+```
+
+```{r}
+# wizualizacja parametrów i wybór najlepszego dla modelu z wagami
+# Dane
+top10_weighted_tree <- tree_weighted_tuned$results %>%
+  arrange(desc(AUC)) %>%
+  head(10) %>%
+  select(cp, F, Precision, Recall, AUC)
+
+#indeks najlepszego wiersza (największy AUC)
+best_row_weighted_tree <- which.max(top10_weighted_tree$AUC)
+
+# Tworzenie tabeli z podświetleniem najlepszego wyniku
+top10_weighted_tree %>%
+  kable(digits = 4, format = "html", caption = "Top 10 wyników strojenia modelu drzewa decyzyjnego z wagami") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(best_row_weighted_tree, bold = TRUE, background = "#DFF0D8")
+```
+
+```{r}
+# Wykres AUC dla zbioru treningowego z wagami
+ggplot(tree_weighted_tuned) +
+  labs(title = "AUC dla parametru cp (model z wagami)", x = "Complexity Parameter (cp)", y = "AUC") +
+  theme_minimal()
+```
+
+Wykres pokazuje wpływ parametru `cp` (Complexity Parameter) na AUC modelu drzewa decyzyjnego (prawdopodobnie z wagami, jak wskazuje tytuł). Oto krótka ocena:
+
+-   Gwałtowny spadek AUC: Dla bardzo małych wartości `cp` (poniżej \~0.01), AUC jest wysokie, ale następuje bardzo gwałtowny spadek, gdy `cp` rośnie.
+
+-   Stabilność przy wyższym `cp`: Od wartości `cp` około 0.02, AUC stabilizuje się na bardzo niskim poziomie (około 0.48), co wskazuje na to, że dalsze zwiększanie złożoności drzewa nie poprawia już jakości modelu, a wręcz może ją pogarszać.
+
+-   Najlepsze wyniki: Uzyskiwane są dla bardzo małych wartości `cp`, bliskich 0 (prawdopodobnie optymalne jest `cp` bliskie 0.005), co sugeruje, że model wymaga dużej złożoności (mniej przycięte drzewo) aby dobrze dopasować dane.
+
+Model jest bardzo wrażliwy na `cp` – nawet niewielkie zwiększenie `cp` (czyli większe przycięcie drzewa) drastycznie pogarsza jakość modelu.
+
+```{r}
+# Predykcja prawdopodobieństw na zbiorze testowym dla modelu z wagami
+test_probs_weighted_tree <- predict(tree_weighted_tuned, newdata = test_scaled, type = "prob")[, "X1"]
+
+roc_test_weighted_tree <- roc(response = test_scaled$TenYearCHD,
+                            predictor = test_probs_weighted_tree,
+                            levels = levels(test_scaled$TenYearCHD))
+plot(roc_test_weighted_tree, col = "blue", main = "Krzywa ROC – Testowy (Drzewo Decyzyjne z wagami)")
+cat("AUC (test, wagi):", auc(roc_test_weighted_tree), "\n")
+```
+
+Krzywa ROC dla Testowego (Drzewo Decyzyjne z wagami) wykazuje zdolność predykcyjną lepszą niż losowa, o czym świadczy jej odchylenie od przekątnej. Jednakże, w porównaniu do poprzednich modeli (szczególnie GLMNet), ta krzywa jest bliżej linii losowej, co sugeruje, że wydajność tego wariantu Drzewa Decyzyjnego może być nieco niższa pod względem zdolności rozróżniania klas. Nadal jest to model użyteczny, ale z niższym AUC niż poprzednie.
+
+```{r}
+# Przewidywania na zbiorze testowym dla modelu z wagami
+test_preds_weighted_tree <- predict(tree_weighted_tuned, newdata = test_scaled, type = "raw")
+
+# Macierz pomyłek dla modelu z wagami
+cm_test_weighted_tree <- confusionMatrix(test_preds_weighted_tree, test_scaled$TenYearCHD, positive = "X1")
+
+# confusion matrix do formatu data.frame do ggplot
+cm_df_weighted_tree <- as.data.frame(cm_test_weighted_tree$table)
+
+# Zmieniana nazw kolumn dla przejrzystości
+colnames(cm_df_weighted_tree) <- c("Prawdziwa", "Przewidziana", "Liczba")
+
+ggplot(data = cm_df_weighted_tree, aes(x = Przewidziana, y = Prawdziwa, fill = Liczba)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Liczba), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1") +
+  labs(
+    title = "Macierz pomyłek (zbiór testowy, model z wagami)",
+    x = "Przewidziana etykieta",
+    y = "Rzeczywista etykieta"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+Model poprawnie zidentyfikował 112 instancji klasy 1 (prawdziwie pozytywne), co oznacza regresję w stosunku do poprzedniego wyniku. 81 przypadków klasy 1 zostało błędnie sklasyfikowanych jako 0 (fałszywie negatywne), również wzrost. Liczba 306 instancji klasy 0 została niepoprawnie oznaczona jako 1 (fałszywie pozytywne), co jest pogorszeniem.
+
+Podsumowując: Ten model charakteryzuje się ponownie niższą czułością (recall) dla klasy 1 (wykrywa 112 z 112+81 = 193 rzeczywistych przypadków klasy 1) oraz wyższą liczbą fałszywie pozytywnych wyników w porównaniu do poprzedniej iteracji. Ogólnie rzecz biorąc, wydajność modelu dla wykrywania klasy 1 pogorszyła się. Jest to niekorzystne w kontekście niezbalansowanego zbioru i celu prawidłowego identyfikowania wartości 1. Konieczna jest ponowna analiza i modyfikacja modelu.
+
+```{r}
+# Wykres ważności zmiennych dla modelu z wagami
+plot(varImp(tree_weighted_tuned), main = "Istotność zmiennych (Drzewo Decyzyjne z wagami)")
+```
+
+Zmienna "sysBP" (skurczowe ciśnienie krwi) jest zdecydowanie najważniejsza, osiągając wartość bliską 100. Tuż za nią plasuje się "age" (wiek) z wartością około 85. "DiaBP" (rozkurczowe ciśnienie krwi) wykazuje również wysoką istotność, na poziomie około 80. Zmienne "BMI" (wskaźnik masy ciała), "glucose" (poziom glukozy) i "totChol" (całkowity cholesterol) posiadają istotność w zakresie 50-60.
+
+"CigsPerDay" (liczba papierosów dziennie) wykazuje istotność około 45. Kolejne zmienne o umiarkowanej istotności, w zakresie 35-40, to "prevalentHyp.1" (występujące nadciśnienie) i "heartRate" (częstość akcji serca).
+
+Zmienne o niższej istotności, w zakresie 15-20, to "male.1" (płeć męska), "education.C" (edukacja.C), "education.L" (edukacja.L), "currentSmoker.1" (aktualny palacz) i "education.Q" (edukacja.Q).
+
+Najniższą istotność, bliską zera, wykazują "diabetes.1" (cukrzyca), "prevalentStroke.1" (występujący udar) i "BPMeds.1" (leki na ciśnienie krwi).
+
+Podsumowując, w modelu drzewa decyzyjnego z wagami kluczowymi predyktorami są skurczowe ciśnienie krwi, wiek i rozkurczowe ciśnienie krwi, podczas gdy czynniki takie jak cukrzyca, udar czy leki na ciśnienie mają marginalne znaczenie.
+
+### **Random Forest**
+
+#### na SMOTE
+
+```{r}
+# Model bazowy (bez tuningu)
+set.seed(123)
+rf_base <- train(
+  TenYearCHD ~ .,
+  data = train_balanced,
+  method = "rf",
+  metric = "AUC",
+  trControl = fitControl_auc
+)
+```
+
+```{r}
+# Strojenie modelu
+# Siatka hiperparametrów
+grid_rf <- expand.grid(mtry = c(2, 4, 6, 8, 10))
+
+set.seed(123)
+rf_tuned <- train(
+  TenYearCHD ~ .,
+  data = train_balanced,
+  method = "rf",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  tuneGrid = grid_rf
+)
+```
+
+```{r, results='asis'}
+# Pobranie wyniku z modelu bazowego (bez tuningu)
+base_results_rf <- rf_base$results
+base_auc_rf <- max(base_results_rf$AUC)
+base_best_row_rf <- base_results_rf[which.max(base_results_rf$AUC), ]
+base_f1_rf <- base_best_row_rf$F
+base_precision_rf <- base_best_row_rf$Precision
+base_recall_rf <- base_best_row_rf$Recall
+
+# Pobranie wyników z modelu tuned (po tuningu)
+tuned_results_rf <- rf_tuned$results
+tuned_auc_rf <- max(tuned_results_rf$AUC)
+tuned_best_row_rf <- tuned_results_rf[which.max(tuned_results_rf$AUC), ]
+tuned_f1_rf <- tuned_best_row_rf$F
+tuned_precision_rf <- tuned_best_row_rf$Precision
+tuned_recall_rf <- tuned_best_row_rf$Recall
+
+# Stworzenie data frame z wynikami
+comparison_df_rf <- data.frame(
+  Model = c("Random Forest Bazowy (przed tuningiem)", "Random Forest Strojenie (po tuningu)"),
+  AUC = c(base_auc_rf, tuned_auc_rf),
+  F1 = c(base_f1_rf, tuned_f1_rf),
+  Precision = c(base_precision_rf, tuned_precision_rf),
+  Recall = c(base_recall_rf, tuned_recall_rf)
+)
+
+
+print(comparison_df_rf %>%
+  kable(digits = 4, format = "html", caption = "Porównanie wyników ewaluacji Random Forest przed i po strojeniu (wg AUC)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")))
+```
+
+Tuning modelu Random Forest przyniósł niewielką, ale zauważalną poprawę – AUC wzrosło z 0.9522 do 0.9547, a F1 z 0.9015 do 0.9027.
+
+Model bazowy był już bardzo dobry, a tuning jedynie minimalnie zwiększył skuteczność. Efektywność predykcji została utrzymana na wysokim poziomie.
+
+```{r}
+# wizualizacja parametrów i wybór najlepszego
+# Dane
+top10_rf <- rf_tuned$results %>%
+  arrange(desc(AUC)) %>%
+  head(10) %>%
+  select(mtry, F, Precision, Recall, AUC)
+
+# Wyszukanie indeks najlepszego wiersza (największy AUC)
+best_row_rf <- which.max(top10_rf$AUC)
+
+# Tworzenie tabeli z podświetleniem najlepszego wyniku
+top10_rf %>%
+  kable(digits = 4, format = "html", caption = "Top 10 wyników strojenia modelu Random Forest") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(best_row_rf, bold = TRUE, background = "#DFF0D8")
+```
+
+```{r}
+# Wykres AUC dla zbioru treningowego
+ggplot(rf_tuned) +
+  labs(title = "AUC dla parametru mtry", x = "Number of randomly selected predictors (mtry)", y = "AUC") +
+  theme_minimal()
+```
+
+Wykres pokazuje wpływ parametru `mtry` (Number of randomly selected predictors) na AUC modelu, prawdopodobnie lasu losowego (Random Forest) lub podobnego algorytmu opartego na agregacji drzew. Oto krótka ocena:
+
+-   Gwałtowny wzrost AUC: Dla małych wartości `mtry` (od 2 do około 4), AUC gwałtownie rośnie, co sugeruje, że zwiększenie liczby losowo wybieranych predyktorów na każdym podziale znacząco poprawia jakość modelu.
+
+-   Stabilność i plateau: W zakresie `mtry` od 4 do 6, AUC osiąga swoje maksimum i utrzymuje się na stabilnym, wysokim poziomie (około 0.954-0.955). Oznacza to, że w tym zakresie model osiąga optymalną równowagę między różnorodnością a siłą poszczególnych drzew.
+
+-   Lekki spadek AUC: Powyżej `mtry` równego 6, AUC zaczyna nieznacznie spadać, choć nadal utrzymuje się na wysokim poziomie. Może to wskazywać na to, że zbyt duża liczba rozważanych predyktorów na podział może prowadzić do lekkiego przetrenowania lub zmniejszenia korzyści płynących z losowości.
+
+Najlepsze wyniki: Uzyskiwane są dla `mtry` w zakresie 4-6, co sugeruje, że dla tego modelu optymalna liczba losowo wybieranych predyktorów na każdym podziale znajduje się w tym przedziale.
+
+```{r}
+# Predykcja prawdopodobieństw
+test_probs_rf <- predict(rf_tuned, newdata = test_scaled, type = "prob")[, "X1"]
+
+roc_test_rf <- roc(response = test_scaled$TenYearCHD,
+                   predictor = test_probs_rf,
+                   levels = levels(test_scaled$TenYearCHD))
+plot(roc_test_rf, col = "blue", main = "Krzywa ROC – Testowy (Random Forest)")
+cat("AUC (test):", auc(roc_test_rf), "\n")
+```
+
+Krzywa ROC dla Testowego (Random Forest) wykazuje bardzo dobrą zdolność predykcyjną. Krzywa wyraźnie i znacząco odchyla się od linii losowej w kierunku lewego górnego rogu. Wizualnie AUC jest wysokie, porównywalne lub nawet lepsze niż w przypadku modeli GLMNet, co wskazuje na silną zdolność modelu Random Forest do rozróżniania między klasami. Jest to bardzo obiecujący wynik.
+
+```{r}
+# Przewidywania na zbiorze testowym
+test_preds_rf <- predict(rf_tuned, newdata = test_scaled, type = "raw")
+
+# Macierz pomyłek
+cm_test_rf <- confusionMatrix(test_preds_rf, test_scaled$TenYearCHD, positive = "X1")
+
+# confusion matrix do formatu data.frame do ggplot
+cm_df_rf <- as.data.frame(cm_test_rf$table)
+
+# Zmieniana nazw kolumn dla przejrzystości
+colnames(cm_df_rf) <- c("Prawdziwa", "Przewidziana", "Liczba")
+
+ggplot(data = cm_df_rf, aes(x = Przewidziana, y = Prawdziwa, fill = Liczba)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Liczba), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1") +
+  labs(
+    title = "Macierz pomyłek (zbiór testowy)",
+    x = "Przewidziana etykieta",
+    y = "Rzeczywista etykieta"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+Model poprawnie zidentyfikował jedynie 49 instancji klasy 1 (prawdziwie pozytywne), co stanowi bardzo niski wynik. Aż 114 przypadków klasy 1 zostało błędnie sklasyfikowanych jako 0 (fałszywie negatywne), co jest znacznym wzrostem. Jednocześnie, 107 instancji klasy 0 zostało niepoprawnie oznaczonych jako 1 (fałszywie pozytywne).
+
+Ten model wykazuje ekstremalnie niską czułość (recall) dla klasy 1 (wykrywa tylko 49 z 49+114 = 163 rzeczywistych przypadków klasy 1). Mimo niższej liczby fałszywie pozytywnych wyników w porównaniu do niektórych wcześniejszych iteracji, dominujący problem to ogromna liczba niewykrytych pozytywnych przypadków. Model jest silnie skłonny do klasyfikowania jako 0, co w przypadku niezbalansowanego zbioru i priorytetu wykrycia 1 czyni go bardzo słabym i nieprzydatnym dla tego celu. Konieczna jest radykalna zmiana strategii modelowania.
+
+```{r}
+# Wykres ważności zmiennych
+plot(varImp(rf_tuned), main = "Istotność zmiennych (Random Forest)")
+```
+
+Zmienna "age" (wiek) jest zdecydowanie najważniejsza, osiągając wartość bliską 100. Kolejne zmienne o wysokiej istotności, w zakresie około 55-60, to "heartRate" (częstość akcji serca) i "sysBP" (skurczowe ciśnienie krwi). "TotChol" (całkowity cholesterol), "glucose" (poziom glukozy), "diaBP" (rozkurczowe ciśnienie krwi) oraz "BMI" (wskaźnik masy ciała) również wykazują znaczące znaczenie, z wartościami powyżej 40.
+
+Zmienna "cigsPerDay" (liczba papierosów dziennie) ma istotność w okolicach 35. Zmienne o niższej, ale nadal zauważalnej istotności (około 15-20) to "prevalentHyp.1" (występujące nadciśnienie) i "male.1" (płeć męska).
+
+Zmienne takie jak "education.C" (edukacja.C), "education.L" (edukacja.L), "currentSmoker.1" (aktualny palacz), "education.Q" (edukacja.Q) i "diabetes.1" (cukrzyca) mają niską istotność, oscylującą w okolicach 5-10. Najniższą istotność, bliską zera, wykazują "BPMeds.1" (leki na ciśnienie krwi) i "prevalentStroke.1" (występujący udar).
+
+Podsumowując, w tym modelu Random Forest wiek jest dominującym czynnikiem wpływającym, a częstość akcji serca i ciśnienie krwi również odgrywają bardzo ważną rolę. Czynniki związane z lekami na ciśnienie i udarem mają marginalne znaczenie.
+
+#### z wagami
+
+```{r}
+set.seed(123)
+rf_weighted_base <- train(
+  TenYearCHD ~ .,
+  data = train_scaled,
+  method = "rf",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  weights = model_weights
+)
+```
+
+```{r}
+# Strojenie modelu
+set.seed(123)
+rf_weighted_tuned <- train(
+  TenYearCHD ~ .,
+  data = train_scaled,
+  method = "rf",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  tuneGrid = grid_rf,
+  weights = model_weights
+)
+```
+
+```{r, results='asis'}
+# Pobranie wyniku z modelu bazowego (bez tuningu) z wagami
+base_results_weighted_rf <- rf_weighted_base$results
+base_auc_weighted_rf <- max(base_results_weighted_rf$AUC)
+base_best_row_weighted_rf <- base_results_weighted_rf[which.max(base_results_weighted_rf$AUC), ]
+base_f1_weighted_rf <- base_best_row_weighted_rf$F
+base_precision_weighted_rf <- base_best_row_weighted_rf$Precision
+base_recall_weighted_rf <- base_best_row_weighted_rf$Recall
+
+# Pobranie wyników z modelu tuned (po tuningu) z wagami
+tuned_results_weighted_rf <- rf_weighted_tuned$results
+tuned_auc_weighted_rf <- max(tuned_results_weighted_rf$AUC)
+tuned_best_row_weighted_rf <- tuned_results_weighted_rf[which.max(tuned_results_weighted_rf$AUC), ]
+tuned_f1_weighted_rf <- tuned_best_row_weighted_rf$F
+tuned_precision_weighted_rf <- tuned_best_row_weighted_rf$Precision
+tuned_recall_weighted_rf <- tuned_best_row_weighted_rf$Recall
+
+# Stworzenie data frame z wynikami porównawczymi dla modeli z wagami
+comparison_df_weighted_rf <- data.frame(
+  Model = c("Random Forest Bazowy (przed tuningiem, z wagami)", "Random Forest Strojenie (po tuningu, z wagami)"),
+  AUC = c(base_auc_weighted_rf, tuned_auc_weighted_rf),
+  F1 = c(base_f1_weighted_rf, tuned_f1_weighted_rf),
+  Precision = c(base_precision_weighted_rf, tuned_precision_weighted_rf),
+  Recall = c(base_recall_weighted_rf, tuned_recall_weighted_rf)
+)
+
+
+print(comparison_df_weighted_rf %>%
+  kable(digits = 4, format = "html", caption = "Porównanie wyników ewaluacji Random Forest przed i po strojeniu (z wagami, wg AUC)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")))
+```
+
+Tuning Random Forest z wagami praktycznie nie wpłynął na jakość modelu – AUC wzrosło minimalnie (z 0.9067 do 0.9100), natomiast F1, precision i recall pozostały niemal identyczne.
+
+Model bazowy był już bardzo dobrze dostrojony pod względem zrównoważenia metryk. Tuning nie był konieczny.
+
+```{r}
+# wizualizacja parametrów i wybór najlepszego dla modelu z wagami
+# Dane
+top10_weighted_rf <- rf_weighted_tuned$results %>%
+  arrange(desc(AUC)) %>%
+  head(10) %>%
+  select(mtry, F, Precision, Recall, AUC)
+
+# Wyszukanie indeks najlepszego wiersza (największy AUC)
+best_row_weighted_rf <- which.max(top10_weighted_rf$AUC)
+
+# Tworzenie tabeli z podświetleniem najlepszego wyniku
+top10_weighted_rf %>%
+  kable(digits = 4, format = "html", caption = "Top 10 wyników strojenia modelu Random Forest z wagami") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(best_row_weighted_rf, bold = TRUE, background = "#DFF0D8")
+```
+
+```{r}
+# Wykres AUC dla zbioru treningowego z wagami
+ggplot(rf_weighted_tuned) +
+  labs(title = "AUC dla parametru mtry (model z wagami)", x = "Number of randomly selected predictors (mtry)", y = "AUC") +
+  theme_minimal()
+```
+
+Wykres pokazuje wpływ parametru `mtry` (Number of randomly selected predictors) na F1-score modelu, prawdopodobnie lasu losowego (Random Forest) z wagami, jak wskazuje tytuł. Należy zauważyć, że oś Y jest oznaczona jako "AUC", ale tytuł wykresu wyraźnie mówi o "F1-score", więc interpretujemy to jako F1-score. Oto krótka ocena:
+
+-   Spadek F1-score wraz ze wzrostem `mtry`: W przeciwieństwie do typowych trendów AUC dla `mtry`, tutaj obserwujemy stały spadek F1-score wraz ze wzrostem liczby losowo wybieranych predyktorów.
+
+-   Najlepsze wyniki przy niskim `mtry`: Najwyższe F1-score (około 0.910) jest osiągane dla najniższej testowanej wartości `mtry` (równej 2). Sugeruje to, że dla tego konkretnego problemu i modelu (prawdopodobnie z wagami), ograniczenie liczby rozważanych predyktorów na każdym podziale jest korzystne.
+
+-   Utrata jakości przy wyższym `mtry`: Wzrost `mtry` do 10 powoduje spadek F1-score do około 0.902. Może to oznaczać, że w przypadku tego modelu, zwiększanie liczby predyktorów na podział wprowadza zbyt wiele "szumu" lub zmniejsza specyficzność drzew, co negatywnie wpływa na precyzję i kompletność (recall) modelu, mierzone przez F1-score.
+
+Model jest wrażliwy na `mtry` – wyższe wartości `mtry` drastycznie pogarszają jakość mierzoną F1-score. Optymalna wartość `mtry` dla tego modelu znajduje się prawdopodobnie w okolicach 2 lub nawet mniej, jeśli byłyby testowane niższe wartości.
+
+```{r}
+# Predykcja prawdopodobieństw na zbiorze testowym dla modelu z wagami
+test_probs_weighted_rf <- predict(rf_weighted_tuned, newdata = test_scaled, type = "prob")[, "X1"]
+
+roc_test_weighted_rf <- roc(response = test_scaled$TenYearCHD,
+                            predictor = test_probs_weighted_rf,
+                            levels = levels(test_scaled$TenYearCHD))
+plot(roc_test_weighted_rf, col = "blue", main = "Krzywa ROC – Testowy (Random Forest z wagami)")
+cat("AUC (test, wagi):", auc(roc_test_weighted_rf), "\n")
+```
+
+Krzywa ROC dla Testowego (Random Forest z wagami) prezentuje bardzo dobrą zdolność predykcyjną. Jej kształt, znacznie oddalony od linii losowej i bliski lewemu górnemu rogowi, wskazuje na wysokie AUC. Model Random Forest z wagami efektywnie rozróżnia klasy, a jego wydajność jest silna i zbliżona do poprzedniego modelu Random Forest bez wag, co sugeruje robustną predykcję.
+
+```{r}
+# Przewidywania na zbiorze testowym dla modelu z wagami
+test_preds_weighted_rf <- predict(rf_weighted_tuned, newdata = test_scaled, type = "raw")
+
+# Macierz pomyłek dla modelu z wagami
+cm_test_weighted_rf <- confusionMatrix(test_preds_weighted_rf, test_scaled$TenYearCHD, positive = "X1")
+
+# confusion matrix do formatu data.frame do ggplot
+cm_df_weighted_rf <- as.data.frame(cm_test_weighted_rf$table)
+
+# Zmieniana nazw kolumn dla przejrzystości
+colnames(cm_df_weighted_rf) <- c("Prawdziwa", "Przewidziana", "Liczba")
+
+ggplot(data = cm_df_weighted_rf, aes(x = Przewidziana, y = Prawdziwa, fill = Liczba)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Liczba), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1") +
+  labs(
+    title = "Macierz pomyłek (zbiór testowy, model z wagami)",
+    x = "Przewidziana etykieta",
+    y = "Rzeczywista etykieta"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+Model poprawnie zidentyfikował tylko 1 instancję klasy 1 (prawdziwie pozytywne). Aż 192 przypadki klasy 1 zostały błędnie sklasyfikowane jako 0 (fałszywie negatywne), co jest dramatycznie wysokim wynikiem. Jednocześnie, tylko 1 instancja klasy 0 została niepoprawnie oznaczona jako 1 (fałszywie pozytywne).
+
+Ten model wykazuje ekstremalnie niską czułość (recall) dla klasy 1 (wykrywa 1 z 1+192 = 193 rzeczywistych przypadków klasy 1). Mimo, że model ma bardzo niską liczbę fałszywie pozytywnych wyników, jego zdolność do wykrywania interesującej nas klasy 1 jest praktycznie zerowa. W kontekście niezbalansowanego zbioru i celu poprawnego wykrywania wartości 1, ten model jest całkowicie nieużyteczny i klasyfikuje niemal wszystkie przypadki jako klasę 0. To jest bardzo duży regres w stosunku do poprzedniego, niemal perfekcyjnego modelu.
+
+```{r}
+# Wykres ważności zmiennych dla modelu z wagami
+plot(varImp(rf_weighted_tuned), main = "Istotność zmiennych (Random Forest z wagami)")
+```
+
+Zmienne "sysBP" (skurczowe ciśnienie krwi) oraz "age" (wiek) są zdecydowanie najważniejsze, osiągając wartości bliskie 100. Kolejne zmienne o bardzo wysokiej istotności, w zakresie około 85-90, to "BMI" (wskaźnik masy ciała), "totChol" (całkowity cholesterol) i "diaBP" (rozkurczowe ciśnienie krwi). "Glucose" (poziom glukozy) oraz "heartRate" (częstość akcji serca) również wykazują wysokie znaczenie, z wartościami odpowiednio około 80 i 70.
+
+Zmienna "cigsPerDay" (liczba papierosów dziennie) ma istotność w okolicach 40. Zmienne o niższej, ale nadal zauważalnej istotności (około 10-20) to "prevalentHyp.1" (występujące nadciśnienie), "education.L" (edukacja.L), "education.C" (edukacja.C) i "male.1" (płeć męska).
+
+Najniższą istotność, bliską zera, wykazują "currentSmoker.1" (aktualny palacz), "education.Q" (edukacja.Q), "diabetes.1" (cukrzyca), "BPMeds.1" (leki na ciśnienie krwi) i "prevalentStroke.1" (występujący udar).
+
+Podsumowując, w modelu Random Forest z wagami skurczowe ciśnienie krwi i wiek są kluczowymi predyktorami, a BMI, cholesterol i rozkurczowe ciśnienie krwi również odgrywają bardzo ważną rolę. Udar i leki na ciśnienie wydają się mieć marginalne znaczenie.
+
+### **Gradient Boosting (`xgboost`)**
+
+#### na SMOTE
+
+```{r}
+# Kontrola treningu
+fitControl_auc <- trainControl(
+  method = "cv",
+  number = 20,
+  classProbs = TRUE,
+  summaryFunction = prSummary,
+  verboseIter = TRUE,
+  savePredictions = "final",
+  allowParallel = TRUE
+)
+```
+
+```{r}
+# Model bazowy (bez tuningu)
+set.seed(123)
+invisible(capture.output({
+xgb_base <- train(
+  TenYearCHD ~ .,
+  data = train_balanced,
+  method = "xgbTree",
+  metric = "AUC",
+  trControl = fitControl_auc
+)
+}))
+```
+
+```{r}
+# Strojenie modelu
+# Siatka hiperparametrów
+grid_xgb <- expand.grid(
+  nrounds = c(50, 100, 150),
+  max_depth = c(2, 4, 6),
+  eta = c(0.01, 0.1, 0.3),
+  gamma = c(0, 0.1),
+  colsample_bytree = c(0.7, 1),
+  min_child_weight = c(1, 5),
+  subsample = c(0.7, 1)
+)
+
+set.seed(123)
+invisible(capture.output({
+xgb_tuned <- train(
+  TenYearCHD ~ .,
+  data = train_balanced,
+  method = "xgbTree",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  tuneGrid = grid_xgb
+)
+}))
+```
+
+```{r, results='asis'}
+# Pobranie wyniku z modelu bazowego (bez tuningu)
+base_results_xgb <- xgb_base$results
+base_auc_xgb <- max(base_results_xgb$AUC)
+base_best_row_xgb <- base_results_xgb[which.max(base_results_xgb$AUC), ]
+base_f1_xgb <- base_best_row_xgb$F
+base_precision_xgb <- base_best_row_xgb$Precision
+base_recall_xgb <- base_best_row_xgb$Recall
+
+# Pobranie wyników z modelu tuned (po tuningu)
+tuned_results_xgb <- xgb_tuned$results
+tuned_auc_xgb <- max(tuned_results_xgb$AUC)
+tuned_best_row_xgb <- tuned_results_xgb[which.max(tuned_results_xgb$AUC), ]
+tuned_f1_xgb <- tuned_best_row_xgb$F
+tuned_precision_xgb <- tuned_best_row_xgb$Precision
+tuned_recall_xgb <- tuned_best_row_xgb$Recall
+
+# Stworzenie data frame z wynikami
+comparison_df_xgb <- data.frame(
+  Model = c("XGBoost Bazowy (przed tuningiem)", "XGBoost Strojenie (po tuningu)"),
+  AUC = c(base_auc_xgb, tuned_auc_xgb),
+  F1 = c(base_f1_xgb, tuned_f1_xgb),
+  Precision = c(base_precision_xgb, tuned_precision_xgb),
+  Recall = c(base_recall_xgb, tuned_recall_xgb)
+)
+
+
+print(comparison_df_xgb %>%
+  kable(digits = 4, format = "html", caption = "Porównanie wyników ewaluacji XGBoost przed i po strojeniu (wg AUC)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")))
+```
+
+Tuning XGBoost znacząco poprawił jakość modelu — AUC wzrosło z 0.9175 do 0.9412, co wskazuje na lepszą zdolność rozróżniania klas. Również F1 i precision zwiększyły się odpowiednio do 0.8956 i 0.8831, pokazując poprawę w równowadze między precyzją a czułością klasyfikacji pozytywnej. Z kolei recall nieco spadł (z 0.9190 do 0.9091), co oznacza, że model po tuningu wykrywa nieco mniej prawdziwych pozytywów, ale rekompensuje to wzrostem precyzji.
+
+Strojenie modelu XGBoost przyniosło wyraźne korzyści, szczególnie w podniesieniu AUC i precyzji, dzięki czemu model jest bardziej selektywny i dokładny w swoich przewidywaniach. Niewielki spadek recall jest typowym kompromisem w optymalizacji metryk i nie wpływa negatywnie na ogólną skuteczność modelu.
+
+```{r}
+# wizualizacja parametrów i wybór najlepszego
+# Dane
+top10_xgb <- xgb_tuned$results %>%
+  arrange(desc(AUC)) %>%
+  head(10) %>%
+  select(nrounds, max_depth, eta, gamma, colsample_bytree, min_child_weight, subsample, F, Precision, Recall, AUC)
+
+# Wyszukanie indeks najlepszego wiersza (największy AUC)
+best_row_xgb <- which.max(top10_xgb$AUC)
+
+# Tworzenie tabeli z podświetleniem najlepszego wyniku
+top10_xgb %>%
+  kable(digits = 4, format = "html", caption = "Top 10 wyników strojenia modelu XGBoost") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(best_row_xgb, bold = TRUE, background = "#DFF0D8")
+```
+
+```{r}
+# Wykres AUC dla zbioru treningowego
+xgb_tuned$results %>%
+  ggplot(aes(x = nrounds, y = F, color = as.factor(eta))) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~max_depth) +
+  labs(title = "AUC dla parametrów XGBoost", x = "liczba rund", y = "AUC", color = "Eta") +
+  theme_minimal()
+```
+
+Wykres pokazuje wpływ parametrów `liczba rund` (Number of Boosting Rounds/Iterations) oraz `Eta` (Learning Rate) na AUC modelu, prawdopodobnie gradient boosting (np. XGBoost, LightGBM, CatBoost). Dodatkowo, na górze wykresu są liczby 2, 4, 6, które mogą oznaczać wartości innego parametru, np. `max_depth` (głębokość drzewa), ale bez legendy jest to trudne do jednoznacznej interpretacji. Zakładając, że są to wartości `max_depth`, oto krótka ocena:
+
+Wpływ `Eta` (Learning Rate):
+
+-    Eta = 0.01 (czerwona linia): Model uczy się bardzo wolno. AUC rośnie wraz z liczbą rund, ale osiąga znacznie niższe wartości w porównaniu do wyższych wartości `Eta`. Sugeruje to, że dla tej stopy uczenia potrzeba znacznie więcej rund, aby osiągnąć zadowalającą wydajność.
+
+-    Eta = 0.1 (zielona linia): Model uczy się szybciej niż dla `Eta=0.01`. AUC rośnie dynamicznie wraz z liczbą rund i osiąga znacznie wyższe wartości. To wskazuje na bardziej efektywne uczenie.
+
+-    Eta = 0.3 (niebieska linia): Model uczy się najszybciej, osiągając najwyższe wartości AUC przy mniejszej liczbie rund. Wartości AUC są najwyższe w całym zakresie badanych parametrów.
+
+Wpływ `liczby rund` (Number of Boosting Rounds):
+
+-    Dla wszystkich wartości `Eta`, AUC konsekwentnie rośnie wraz ze wzrostem `liczby rund`. Oznacza to, że dodawanie kolejnych drzew do ansamblu poprawia wydajność modelu, aż do momentu, gdy może nastąpić przetrenowanie (choć na tym wykresie nie widać wyraźnych oznak przetrenowania w badanym zakresie).
+
+Wpływ `max_depth` (2, 4, 6 na górze):
+
+-   Dla `Eta = 0.01` i `Eta = 0.1`, zwiększanie głębokości drzewa (przejście od "2" do "4" i do "6") zazwyczaj prowadzi do wzrostu AUC. Im głębsze drzewa, tym większa zdolność modelu do uczenia się złożonych zależności.
+
+-    Dla `Eta = 0.3`{style="caret-color: white;"}, zwiększanie głębokości drzewa z "2" na "4" i na "6" również skutkuje wzrostem AUC, osiągając najwyższe wartości, bliskie 0.90. To sugeruje, że dla szybszej stopy uczenia, głębsze drzewa również przyczyniają się do lepszego dopasowania.
+
+Ogólne wnioski:
+
+-    Najlepsze wyniki: Uzyskiwane są dla wysokiej wartości `Eta` (0.3) w połączeniu z większą `liczbą rund` i większą głębokością drzewa (np. "6").
+
+-    Balans `Eta` i `liczby rund`: Wyższe `Eta` pozwala na osiągnięcie wysokiego AUC przy mniejszej liczbie rund, co jest efektywne obliczeniowo. Niższe `Eta` wymaga znacznie więcej rund, aby osiągnąć porównywalne wyniki (o ile w ogóle).
+
+-    Głębokość drzewa: Większa głębokość drzewa (`max_depth`) wydaje się generalnie korzystna dla wszystkich badanych wartości `Eta` i `liczby rund`.
+
+Model jest silnie wrażliwy na `Eta` i `liczbę rund`. Wyższa wartość `Eta` w połączeniu z odpowiednią liczbą rund i głębokością drzewa prowadzi do najlepszych rezultatów.
+
+```{r}
+# Predykcja prawdopodobieństw
+test_probs_xgb <- predict(xgb_tuned, newdata = test_scaled, type = "prob")[, "X1"]
+
+roc_test_xgb <- roc(response = test_scaled$TenYearCHD,
+                   predictor = test_probs_xgb,
+                   levels = levels(test_scaled$TenYearCHD))
+plot(roc_test_xgb, col = "blue", main = "Krzywa ROC – Testowy (XGBoost)")
+cat("AUC (test):", auc(roc_test_xgb), "\n")
+```
+
+Krzywa ROC dla Testowego (XGBoost) demonstruje bardzo dobrą zdolność predykcyjną. Jej wyraźne odchylenie od linii losowej w kierunku lewego górnego rogu wskazuje na wysokie AUC. Model XGBoost skutecznie rozróżnia między klasami, a jego wydajność jest porównywalna z najlepszymi dotychczas analizowanymi modelami, co potwierdza jego silną moc predykcyjną.
+
+```{r}
+# Przewidywania na zbiorze testowym
+test_preds_xgb <- predict(xgb_tuned, newdata = test_scaled, type = "raw")
+
+# Macierz pomyłek
+cm_test_xgb <- confusionMatrix(test_preds_xgb, test_scaled$TenYearCHD, positive = "X1")
+
+# confusion matrix do formatu data.frame do ggplot
+cm_df_xgb <- as.data.frame(cm_test_xgb$table)
+
+# Zmieniana nazw kolumn dla przejrzystości
+colnames(cm_df_xgb) <- c("Prawdziwa", "Przewidziana", "Liczba")
+
+ggplot(data = cm_df_xgb, aes(x = Przewidziana, y = Prawdziwa, fill = Liczba)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Liczba), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1") +
+  labs(
+    title = "Macierz pomyłek (zbiór testowy)",
+    x = "Przewidziana etykieta",
+    y = "Rzeczywista etykieta"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+Model poprawnie zidentyfikował jedynie 32 instancje klasy 1 (prawdziwie pozytywne), co jest bardzo niskim wynikiem. Aż 161 przypadków klasy 1 zostało błędnie sklasyfikowanych jako 0 (fałszywie negatywne), co wskazuje na znaczną liczbę niewykrytych pozytywnych przypadków. Jednocześnie, 96 instancji klasy 0 zostało niepoprawnie oznaczonych jako 1 (fałszywie pozytywne).
+
+Ten model charakteryzuje się ekstremalnie niską czułością (recall) dla klasy 1 (wykrywa tylko 32 z 32+161 = 193 rzeczywistych przypadków klasy 1). Mimo relatywnie niższej liczby fałszywie pozytywnych wyników (w porównaniu do niektórych wcześniejszych modeli), dominującym problemem jest rażąca niezdolność do wykrycia większości pozytywnych przypadków. W kontekście niezbalansowanego zbioru i priorytetu wykrycia wartości 1, ten model jest nieefektywny i wymaga fundamentalnych zmian w celu poprawy jego zdolności do identyfikowania interesującej nas klasy.
+
+```{r}
+# Wykres ważności zmiennych
+plot(varImp(xgb_tuned), main = "Istotność zmiennych (XGBoost)")
+```
+
+Zmienna "age" (wiek) jest zdecydowanie najbardziej istotna, osiągając wartość zbliżoną do 100. Kolejne zmienne o wysokiej istotności to "heartRate" (częstość akcji serca) z wartością około 55 oraz "glucose" (poziom glukozy) z wartością około 40. "TotChol" (całkowity cholesterol), "diaBP" (rozkurczowe ciśnienie krwi), "cigsPerDay" (liczba papierosów dziennie) i "sysBP" (skurczowe ciśnienie krwi) wykazują umiarkowaną istotność, w zakresie 30-35. "BMI" (wskaźnik masy ciała) i "male.1" (płeć męska) również posiadają znaczenie, lecz niższe.
+
+Zmienne takie jak "prevalentHyp.1" (występujące nadciśnienie), "education.C" (edukacja.C), "education.L" (edukacja.L) i "education.Q" (edukacja.Q) mają niską istotność, oscylującą w okolicach 5-15. Najmniejszą istotność, bliską zera, wykazują "currentSmoker.1" (aktualny palacz), "diabetes.1" (cukrzyca), "BPMeds.1" (leki na ciśnienie krwi) i "prevalentStroke.1" (występujący udar).
+
+Podsumowując, w tym modelu XGBoost wiek jest dominującym czynnikiem wpływającym, a częstość akcji serca i poziom glukozy również odgrywają znaczącą rolę. Czynniki związane z paleniem, cukrzycą, lekami na ciśnienie i udarem mają marginalne znaczenie.
+
+#### z wagami
+
+```{r}
+set.seed(123)
+invisible(capture.output({
+xgb_weighted_base <- train(
+  TenYearCHD ~ .,
+  data = train_scaled,
+  method = "xgbTree",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  weights = model_weights
+)
+}))
+```
+
+```{r}
+# Strojenie modelu
+set.seed(123)
+invisible(capture.output({
+xgb_weighted_tuned <- train(
+  TenYearCHD ~ .,
+  data = train_scaled,
+  method = "xgbTree",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  tuneGrid = grid_xgb,
+  weights = model_weights
+)
+}))
+```
+
+```{r, results='asis'}
+# Pobranie wyniku z modelu bazowego (bez tuningu) z wagami
+base_results_weighted_xgb <- xgb_weighted_base$results
+base_f1_weighted_xgb <- max(base_results_weighted_xgb$F)
+base_precision_weighted_xgb <- base_results_weighted_xgb[which.max(base_results_weighted_xgb$F), "Precision"]
+base_recall_weighted_xgb <- base_results_weighted_xgb[which.max(base_results_weighted_xgb$F), "Recall"]
+
+# Pobranie wyników z modelu tuned (po tuningu) z wagami
+tuned_results_weighted_xgb <- xgb_weighted_tuned$results
+tuned_f1_weighted_xgb <- max(tuned_results_weighted_xgb$F)
+tuned_precision_weighted_xgb <- tuned_results_weighted_xgb[which.max(tuned_results_weighted_xgb$F), "Precision"]
+tuned_recall_weighted_xgb <- tuned_results_weighted_xgb[which.max(tuned_results_weighted_xgb$F), "Recall"]
+
+# Stworzenie data frame z wynikami porównawczymi dla modeli z wagami
+comparison_df_weighted_xgb <- data.frame(
+  Model = c("XGBoost Bazowy (przed tuningiem, z wagami)", "XGBoost Strojenie (po tuningu, z wagami)"),
+  F1 = c(base_f1_weighted_xgb, tuned_f1_weighted_xgb),
+  Precision = c(base_precision_weighted_xgb, tuned_precision_weighted_xgb),
+  Recall = c(base_recall_weighted_xgb, tuned_recall_weighted_xgb)
+)
+
+
+print(comparison_df_weighted_xgb %>%
+  kable(digits = 4, format = "html", caption = "Porównanie wyników ewaluacji XGBoost przed i po strojeniu (z wagami)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")))
+```
+
+Tuning modelu XGBoost z uwzględnieniem wag znacząco poprawił ogólną jakość klasyfikacji — F1 wzrosło z 0.8495 do 0.8926, co wskazuje na lepszą równowagę między precyzją a czułością. Zauważalny jest wzrost recall (z 0.8284 do 0.9253), czyli model po tuningu lepiej wykrywa prawdziwe pozytywy. Natomiast precision nieco spadło (z 0.8724 do 0.8623), co oznacza, że model po tuningu nieco częściej generuje fałszywe alarmy, ale jest to zwykle akceptowalny kompromis dla zwiększenia recall.
+
+\
+Tuning modelu z wagami pozwolił na zwiększenie czułości (recall), co jest istotne, gdy ważne jest wykrywanie jak największej liczby pozytywnych przypadków, kosztem niewielkiego spadku precyzji. Ostatecznie model jest bardziej skuteczny w identyfikacji klas pozytywnych, co poprawia jego praktyczną użyteczność.
+
+```{r}
+# wizualizacja parametrów i wybór najlepszego dla modelu z wagami
+# Dane
+top10_weighted_xgb <- xgb_weighted_tuned$results %>%
+  arrange(desc(AUC)) %>%
+  head(10) %>%
+  select(nrounds, max_depth, eta, gamma, colsample_bytree, min_child_weight, subsample, F, Precision, Recall, AUC)
+
+#indeks najlepszego wiersza (największy AUC)
+best_row_weighted_xgb <- which.max(top10_weighted_xgb$F)
+
+# Tworzenie tabeli z podświetleniem najlepszego wyniku
+top10_weighted_xgb %>%
+  kable(digits = 4, format = "html", caption = "Top 10 wyników strojenia modelu XGBoost z wagami") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(best_row_weighted_xgb, bold = TRUE, background = "#DFF0D8")
+
+# Wykres AUC dla zbioru treningowego z wagami
+xgb_tuned$results %>%
+  ggplot(aes(x = nrounds, y = F, color = as.factor(eta))) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~max_depth) +
+  labs(title = "AUC dla parametrów XGBoost", x = "liczba rund", y = "AUC", color = "Eta") +
+  theme_minimal()
+```
+
+Wpływ `Eta` (Learning Rate):
+
+-    Eta = 0.01 (czerwona linia): Model uczy się bardzo wolno. AUC rośnie wraz z liczbą rund, ale pozostaje na znacznie niższym poziomie w porównaniu do wyższych wartości `Eta`. Wskazuje to na potrzebę znacznie większej liczby rund, aby osiągnąć optymalną wydajność dla tej niskiej stopy uczenia.
+
+-    Eta = 0.1 (zielona linia): Model uczy się efektywniej niż dla `Eta=0.01`. AUC wyraźnie rośnie wraz z liczbą rund i osiąga znacznie wyższe wartości, zbliżając się do wyników dla `Eta=0.3` przy większej liczbie rund.
+
+-    Eta = 0.3 (niebieska linia): Model uczy się najszybciej i osiąga najwyższe wartości AUC przy mniejszej liczbie rund. Wartości AUC są ogólnie najwyższe spośród wszystkich badanych `Eta`.
+
+Wpływ `liczby rund` (Number of Boosting Rounds):
+
+-    Dla każdej wartości `Eta` i `max_depth`, AUC konsekwentnie wzrasta wraz ze zwiększaniem `liczby rund`. Sugeruje to, że model korzysta z dodawania kolejnych drzew do ansamblu, poprawiając swoją zdolność do przewidywania. Nie widać jeszcze wyraźnych oznak przetrenowania w badanym zakresie rund.
+
+Wpływ `max_depth` (2, 4, 6):
+
+-    Zwiększenie `max_depth` (przejście od 2 do 4, a następnie do 6) zazwyczaj prowadzi do poprawy wartości AUC dla każdej kombinacji `Eta` i `liczby rund`. Wyższa głębokość drzewa pozwala modelowi na uchwycenie bardziej złożonych zależności w danych, co przekłada się na lepsze AUC.
+
+-    Dla `max_depth=6`{style="caret-color: white;"}, model osiąga najwyższe AUC (bliskie 0.90) przy `Eta=0.3`{style="caret-color: white;"} i większej liczbie rund.
+
+Najlepsze wyniki:
+
+-    Najlepsze AUC uzyskiwane są dla kombinacji wysokiego `Eta` (0.3), większej `liczby rund` (np. 150) i większej głębokości drzewa (`max_depth=6`).
+
+Ogólne wnioski:
+
+-    Model XGBoost jest silnie wrażliwy na parametry `Eta`, `liczba rund` i `max_depth`.
+
+-   Wyższa stopa uczenia (`Eta`{style="caret-color: white;"}) pozwala na szybsze osiągnięcie wysokiego AUC, potencjalnie wymagając mniej rund.
+
+-    Zwiększanie liczby rund i głębokości drzewa generalnie poprawia wydajność modelu w badanym zakresie.
+
+```{r}
+# Predykcja prawdopodobieństw na zbiorze testowym dla modelu z wagami
+test_probs_weighted_xgb <- predict(xgb_weighted_tuned, newdata = test_scaled, type = "prob")[, "X1"]
+
+roc_test_weighted_xgb <- roc(response = test_scaled$TenYearCHD,
+                            predictor = test_probs_weighted_xgb,
+                            levels = levels(test_scaled$TenYearCHD))
+plot(roc_test_weighted_xgb, col = "blue", main = "Krzywa ROC – Testowy (XGBoost z wagami)")
+cat("AUC (test, wagi):", auc(roc_test_weighted_xgb), "\n")
+```
+
+Krzywa ROC dla Testowego (XGBoost z wagami) wykazuje bardzo silną zdolność predykcyjną. Jej kształt, z wyraźnym odchyleniem od linii losowej i bliskością lewego górnego rogu, sygnalizuje wysokie AUC. Model XGBoost z wagami efektywnie rozróżnia między klasami, prezentując solidną i efektywną predykcję, porównywalną z najlepszymi dotychczasowymi wynikami.
+
+```{r}
+# Przewidywania na zbiorze testowym dla modelu z wagami
+test_preds_weighted_xgb <- predict(xgb_weighted_tuned, newdata = test_scaled, type = "raw")
+
+# Macierz pomyłek dla modelu z wagami
+cm_test_weighted_xgb <- confusionMatrix(test_preds_weighted_xgb, test_scaled$TenYearCHD, positive = "X1")
+
+# confusion matrix do formatu data.frame do ggplot
+cm_df_weighted_xgb <- as.data.frame(cm_test_weighted_xgb$table)
+
+# Zmieniana nazw kolumn dla przejrzystości
+colnames(cm_df_weighted_xgb) <- c("Prawdziwa", "Przewidziana", "Liczba")
+
+ggplot(data = cm_df_weighted_xgb, aes(x = Przewidziana, y = Prawdziwa, fill = Liczba)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Liczba), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1") +
+  labs(
+    title = "Macierz pomyłek (zbiór testowy, model z wagami)",
+    x = "Przewidziana etykieta",
+    y = "Rzeczywista etykieta"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+Model poprawnie zidentyfikował 101 instancji klasy 1 (prawdziwie pozytywne). Niestety, 92 przypadki klasy 1 zostały błędnie sklasyfikowane jako 0 (fałszywie negatywne), co oznacza, że duża część pozytywnych przypadków nie została wykryta. Dodatkowo, 291 instancji klasy 0 zostało niepoprawnie oznaczonych jako 1 (fałszywie pozytywne), co wskazuje na znaczną liczbę "fałszywych alarmów".
+
+Model ma niską czułość (recall) dla klasy 1 (wykrywa 101 z 101+92 = 193 rzeczywistych przypadków klasy 1) i jednocześnie wysoki odsetek fałszywie pozytywnych wyników. Jego zdolność do efektywnego wykrywania wartości 1 w niezbalansowanym zbiorze jest słaba. Wymaga to dalszych usprawnień, aby lepiej radzić sobie z identyfikacją klasy pozytywnej i redukcją błędnych klasyfikacji.
+
+```{r}
+# Wykres ważności zmiennych dla modelu z wagami
+plot(varImp(xgb_weighted_tuned), main = "Istotność zmiennych (XGBoost z wagami)")
+```
+
+Zmienna "age" (wiek) jest zdecydowanie najważniejsza, osiągając maksymalną wartość 100. Na drugim miejscu pod względem istotności znajduje się "sysBP" (skurczowe ciśnienie krwi), z wartością powyżej 50. Zmienna "cigsPerDay" (liczba papierosów dziennie) również wykazuje znaczącą istotność, plasując się nieco powyżej 20.
+
+Kolejne zmienne o umiarkowanej istotności, w zakresie około 10-20, to "diaBP" (rozkurczowe ciśnienie krwi), "BMI" (wskaźnik masy ciała), "totChol" (całkowity cholesterol), "heartRate" (częstość akcji serca), "glucose" (poziom glukozy) i "male.1" (płeć męska).
+
+Zmienne o najniższej istotności, bliskiej zeru, obejmują "prevalentHyp.1" (występujące nadciśnienie), "diabetes.1" (cukrzyca), "currentSmoker.1" (aktualny palacz), "education.Q" (edukacja.Q), "education.C" (edukacja.C), "prevalentStroke.1" (występujący udar), "education.L" (edukacja.L) oraz "BPMeds.1" (leki na ciśnienie krwi), przy czym te ostatnie wydają się mieć marginalne znaczenie w tym modelu.
+
+Podsumowując, w modelu XGBoost z wagami wiek i skurczowe ciśnienie krwi są kluczowymi predyktorami, podczas gdy czynniki takie jak przebyty udar czy przyjmowanie leków na ciśnienie mają znikomy wpływ.
+
+### Sieci neuronowe
+
+#### na SMOTE
+
+```{r}
+library(nnet)
+
+set.seed(123)
+nn_base <- train(
+  TenYearCHD ~ .,
+  data = train_balanced,
+  method = "nnet",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  trace = FALSE, # Wyłącza verbose output z nnet
+  MaxNWts = 10000 # Zwiększa limit wag dla większych sieci
+)
+```
+
+```{r}
+# Strojenie modelu
+# Siatka hiperparametrów dla nnet (size - liczba neuronów w ukrytej warstwie, decay - współczynnik wag)
+grid_nn <- expand.grid(size = c(5, 10, 15), decay = c(0.01, 0.1, 0.5))
+
+set.seed(123)
+nn_tuned <- train(
+  TenYearCHD ~ .,
+  data = train_balanced,
+  method = "nnet",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  tuneGrid = grid_nn,
+  trace = FALSE,
+  MaxNWts = 10000
+)
+```
+
+```{r, results='asis'}
+# Pobranie wyniku z modelu bazowego (bez tuningu)
+base_results_nn <- nn_base$results
+base_auc_nn <- max(base_results_nn$AUC)
+base_best_row_nn <- base_results_nn[which.max(base_results_nn$AUC), ]
+base_f1_nn <- base_best_row_nn$F
+base_precision_nn <- base_best_row_nn$Precision
+base_recall_nn <- base_best_row_nn$Recall
+
+# Pobranie wyników z modelu tuned (po tuningu)
+tuned_results_nn <- nn_tuned$results
+tuned_auc_nn <- max(tuned_results_nn$AUC)
+tuned_best_row_nn <- tuned_results_nn[which.max(tuned_results_nn$AUC), ]
+tuned_f1_nn <- tuned_best_row_nn$F
+tuned_precision_nn <- tuned_best_row_nn$Precision
+tuned_recall_nn <- tuned_best_row_nn$Recall
+
+# Stworzenie data frame z wynikami porównawczymi
+comparison_df_nn <- data.frame(
+  Model = c("Sieć Neuronowa Bazowa (przed tuningiem)", "Sieć Neuronowa Strojenie (po tuningu)"),
+  AUC = c(base_auc_nn, tuned_auc_nn),
+  F1 = c(base_f1_nn, tuned_f1_nn),
+  Precision = c(base_precision_nn, tuned_precision_nn),
+  Recall = c(base_recall_nn, tuned_recall_nn)
+)
+
+
+print(comparison_df_nn %>%
+  kable(digits = 4, format = "html", caption = "Porównanie wyników ewaluacji sieci neuronowej przed i po strojeniu (wg AUC)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")))
+```
+
+Tuning sieci neuronowej przyniósł zauważalną poprawę we wszystkich kluczowych metrykach. AUC wzrosło z 0.8028 do 0.8537, co oznacza lepszą zdolność modelu do rozróżniania klas. F1-score poprawił się o ponad 0.05, pokazując lepszą równowagę między precyzją a recall. Zarówno precision (z 0.7346 do 0.7897), jak i recall (z 0.7042 do 0.7514) wzrosły, co świadczy o ogólnej poprawie skuteczności klasyfikacji.
+
+Strojenie parametrów sieci neuronowej znacząco podniosło jej efektywność i stabilność, co czyni model bardziej wiarygodnym w przewidywaniu zarówno pozytywnych, jak i negatywnych przypadków.
+
+```{r}
+# Wizualizacja parametrów i wybór najlepszego
+top10_nn <- nn_tuned$results %>%
+  arrange(desc(AUC)) %>%
+  head(10) %>%
+  select(size, decay, F, Precision, Recall, AUC)
+
+best_row_nn <- which.max(top10_nn$AUC)
+
+top10_nn %>%
+  kable(digits = 4, format = "html", caption = "Top 10 wyników strojenia modelu sieci neuronowej") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(best_row_nn, bold = TRUE, background = "#DFF0D8")
+
+ggplot(nn_tuned) +
+  labs(title = "AUC dla parametrów sieci neuronowej", x = "Parametr", y = "AUC") +
+  theme_minimal()
+```
+
+Wpływ `Weight Decay`:
+
+-    Weight Decay = 0.01 (czerwona linia): Model z najmniejszą regularyzacją L2. AUC rośnie wraz z parametrem, ale osiąga najniższe wartości spośród wszystkich `Weight Decay`. Może to sugerować, że model jest podatny na przetrenowanie lub nie jest wystarczająco uregularyzowany.
+
+-    Weight Decay = 0.10 (zielona linia): Model ze średnią regularyzacją L2. AUC rośnie bardzo dynamicznie wraz z parametrem i osiąga najwyższe wartości, zrównując się z `Weight Decay = 0.50` przy najwyższym parametrze. To wskazuje na dobrą równowagę między dopasowaniem a regularyzacją.
+
+-    Weight Decay = 0.50 (niebieska linia): Model z najwyższą regularyzacją L2. AUC również rośnie wraz z parametrem i osiąga najwyższe wartości, szczególnie przy większych wartościach parametru.
+
+Wpływ parametru:
+
+-    Dla wszystkich wartości `Weight Decay`, AUC konsekwentnie wzrasta wraz ze wzrostem parametru (od 5.0 do 15.0). Sugeruje to, że zwiększanie złożoności sieci (np. poprzez dodawanie neuronów) pozytywnie wpływa na zdolność modelu do uczenia się i poprawia jego wydajność, przynajmniej w badanym zakresie.
+
+-    Najwyższe AUC jest osiągane przy najwyższej wartości parametru (15.0).
+
+Najlepsze wyniki:
+
+-    Najlepsze AUC uzyskiwane jest dla największej wartości parametru (15.0) w połączeniu z `Weight Decay` równym 0.10 lub 0.50. Te dwie wartości `Weight Decay` wydają się być optymalne w tym zakresie parametrów.
+
+Ogólne wnioski:
+
+-    Model sieci neuronowej korzysta ze zwiększania złożoności (parametru).
+
+-    Regularyzacja L2 (Weight Decay) jest kluczowa dla optymalizacji wydajności. Zbyt niska (`0.01`{style="caret-color: white;"}) prowadzi do gorszych wyników, podczas gdy umiarkowane i wyższe wartości (`0.10`{style="caret-color: white;"} i `0.50`{style="caret-color: white;"}) są bardziej efektywne, zwłaszcza przy większej złożoności sieci.
+
+```{r}
+# Predykcja prawdopodobieństw
+test_probs_nn <- predict(nn_tuned, newdata = test_scaled, type = "prob")[, "X1"]
+
+roc_test_nn <- roc(response = test_scaled$TenYearCHD,
+                   predictor = test_probs_nn,
+                   levels = levels(test_scaled$TenYearCHD))
+plot(roc_test_nn, col = "blue", main = "Krzywa ROC – Testowy (Sieć Neuronowa)")
+cat("AUC (test):", auc(roc_test_nn), "\n")
+```
+
+Krzywa ROC dla Testowego (Sieć Neuronowa) demonstruje bardzo dobrą zdolność predykcyjną. Jej wyraźne odchylenie od linii losowej w kierunku lewego górnego rogu wskazuje na wysokie AUC. Model Sieci Neuronowej skutecznie rozróżnia między klasami, a jego wydajność jest porównywalna z najlepszymi dotychczas analizowanymi modelami, co potwierdza jego silną moc predykcyjną.
+
+```{r}
+# Przewidywania na zbiorze testowym
+test_preds_nn <- predict(nn_tuned, newdata = test_scaled, type = "raw")
+```
+
+```{r}
+# Macierz pomyłek
+cm_test_nn <- confusionMatrix(test_preds_nn, test_scaled$TenYearCHD, positive = "X1")
+
+cm_df_nn <- as.data.frame(cm_test_nn$table)
+colnames(cm_df_nn) <- c("Prawdziwa", "Przewidziana", "Liczba")
+
+ggplot(data = cm_df_nn, aes(x = Przewidziana, y = Prawdziwa, fill = Liczba)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Liczba), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1") +
+  labs(
+    title = "Macierz pomyłek (zbiór testowy, Sieć Neuronowa)",
+    x = "Przewidziana etykieta",
+    y = "Rzeczywista etykieta"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+Model poprawnie zidentyfikował 85 instancji klasy 1 (prawdziwie pozytywne), co jest spadkiem. Aż 108 przypadków klasy 1 zostało błędnie sklasyfikowanych jako 0 (fałszywie negatywne), co oznacza, że duża część pozytywnych przypadków nadal pozostaje niewykryta. Dodatkowo, 288 instancji klasy 0 zostało niepoprawnie oznaczonych jako 1 (fałszywie pozytywne), co jest wartością podobną do poprzednich wyników.
+
+Ten model charakteryzuje się niską czułością (recall) dla klasy 1 (wykrywa 85 z 85+108 = 193 rzeczywistych przypadków klasy 1) oraz nadal wysokim odsetkiem fałszywie pozytywnych wyników. W kontekście niezbalansowanego zbioru i celu poprawnego wykrywania wartości 1, model jest nieefektywny. Wskazuje to na potrzebę dalszych modyfikacji i strojenia, aby poprawić jego zdolność do identyfikacji klasy pozytywnej i zredukować liczbę błędnych alarmów.
+
+```{r}
+# Wykres ważności zmiennych
+plot(varImp(nn_tuned), main = "Istotność zmiennych (Sieć Neuronowa)")
+```
+
+Zmienna "age" (wiek) jest zdecydowanie najbardziej istotna, osiągając wartość bliską 100. Tuż za nią plasuje się "education.Q" (edukacja.Q), również wykazując bardzo wysoką istotność. Kolejne zmienne o wysokiej istotności to "totChol" (całkowity cholesterol), "male.1" (płeć męska) oraz "sysBP" (skurczowe ciśnienie krwi), z wartościami powyżej 50.
+
+Zmienne takie jak "education.C" (edukacja.C), "prevalentHyp.1" (występujące nadciśnienie) i "education.L" (edukacja.L) wykazują umiarkowaną istotność, mieszczącą się w zakresie 35-50. Niższą istotność, poniżej 30, prezentują zmienne takie jak "heartRate" (częstość akcji serca), "glucose" (poziom glukozy), "diabetes.1" (cukrzyca), "currentSmoker.1" (aktualny palacz) i "diaBP" (rozkurczowe ciśnienie krwi).
+
+Najniższą istotność, bliską zera, wykazują zmienne "BPMeds.1" (leki na ciśnienie krwi), "BMI" (wskaźnik masy ciała) oraz "prevalentStroke.1" (występujący udar).
+
+Podsumowując, wiek i edukacja.Q są kluczowymi czynnikami w analizowanym modelu, natomiast leki na ciśnienie, BMI i przebyty udar mają marginalne znaczenie.
+
+#### z wagami
+
+```{r}
+set.seed(123)
+nn_weighted_base <- train(
+  TenYearCHD ~ .,
+  data = train_scaled,
+  method = "nnet",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  weights = model_weights,
+  trace = FALSE,
+  MaxNWts = 10000
+)
+```
+
+```{r}
+set.seed(123)
+nn_weighted_tuned <- train(
+  TenYearCHD ~ .,
+  data = train_scaled,
+  method = "nnet",
+  metric = "AUC",
+  trControl = fitControl_auc,
+  tuneGrid = grid_nn,
+  weights = model_weights,
+  trace = FALSE,
+  MaxNWts = 10000
+)
+```
+
+```{r, results='asis'}
+# Pobierz wyniki z modelu bazowego (bez tuningu, z wagami)
+base_results_weighted_nn <- nn_weighted_base$results
+base_auc_weighted_nn <- max(base_results_weighted_nn$AUC)
+base_best_row_weighted_nn <- base_results_weighted_nn[which.max(base_results_weighted_nn$AUC), ]
+base_f1_weighted_nn <- base_best_row_weighted_nn$F
+base_precision_weighted_nn <- base_best_row_weighted_nn$Precision
+base_recall_weighted_nn <- base_best_row_weighted_nn$Recall
+
+# Pobierz wyniki z modelu tuned (po tuningu, z wagami)
+tuned_results_weighted_nn <- nn_weighted_tuned$results
+tuned_auc_weighted_nn <- max(tuned_results_weighted_nn$AUC)
+tuned_best_row_weighted_nn <- tuned_results_weighted_nn[which.max(tuned_results_weighted_nn$AUC), ]
+tuned_f1_weighted_nn <- tuned_best_row_weighted_nn$F
+tuned_precision_weighted_nn <- tuned_best_row_weighted_nn$Precision
+tuned_recall_weighted_nn <- tuned_best_row_weighted_nn$Recall
+
+# Stworzenie data frame z wynikami porównawczymi
+comparison_df_weighted_nn <- data.frame(
+  Model = c("Sieć Neuronowa Bazowa (przed tuningiem, z wagami)", "Sieć Neuronowa Strojenie (po tuningu, z wagami)"),
+  AUC = c(base_auc_weighted_nn, tuned_auc_weighted_nn),
+  F1 = c(base_f1_weighted_nn, tuned_f1_weighted_nn),
+  Precision = c(base_precision_weighted_nn, tuned_precision_weighted_nn),
+  Recall = c(base_recall_weighted_nn, tuned_recall_weighted_nn)
+)
+
+
+print(comparison_df_weighted_nn %>%
+  kable(digits = 4, format = "html", caption = "Porównanie wyników ewaluacji sieci neuronowej przed i po strojeniu (z wagami, wg AUC)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")))
+```
+
+Po tuningu sieci neuronowej z wagami widzimy mieszane efekty. AUC nieco spadło (z 0.9221 do 0.9052), co sugeruje minimalne pogorszenie zdolności rozróżniania klas. Z kolei F1-score nieznacznie wzrosło (z 0.7888 do 0.7951), co wskazuje na poprawę równowagi między precyzją a czułością. Precision zmalało (z 0.9179 do 0.8973), czyli model po tuningu częściej generuje fałszywe alarmy, natomiast recall wzrósł (z 0.6934 do 0.7153), co oznacza lepsze wykrywanie prawdziwych pozytywów.
+
+Tuning wprowadził kompromis między precyzją a recall — model stał się bardziej czuły na wykrywanie pozytywnych przypadków kosztem większej liczby fałszywych alarmów, mimo nieco niższego AUC. Takie dostrojenie może być korzystne, jeśli większą wagę przykładamy do wykrywania przypadków pozytywnych.
+
+```{r}
+# Wizualizacja parametrów i wybór najlepszego dla modelu z wagami
+top10_weighted_nn <- nn_weighted_tuned$results %>%
+  arrange(desc(AUC)) %>%
+  head(10) %>%
+  select(size, decay, F, Precision, Recall, AUC)
+
+best_row_weighted_nn <- which.max(top10_weighted_nn$AUC)
+
+top10_weighted_nn %>%
+  kable(digits = 4, format = "html", caption = "Top 10 wyników strojenia modelu sieci neuronowej z wagami") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(best_row_weighted_nn, bold = TRUE, background = "#DFF0D8")
+
+ggplot(nn_weighted_tuned) +
+  labs(title = "AUC dla parametrów sieci neuronowej (model z wagami)", x = "Parametr", y = "AUC") +
+  theme_minimal()
+```
+
+Wpływ `Weight Decay`:
+
+-    Weight Decay = 0.01 (czerwona linia): Model z najmniejszą regularyzacją L2. AUC spada wraz ze wzrostem parametru i jest konsekwentnie najniższe spośród wszystkich wartości `Weight Decay`. Sugeruje to, że dla tej niskiej regularyzacji zwiększanie złożoności parametru prowadzi do przetrenowania i pogorszenia wyników.
+
+-    Weight Decay = 0.10 (zielona linia): Model ze średnią regularyzacją L2. AUC również spada wraz ze wzrostem parametru, ale startuje z wyższego poziomu niż `Weight Decay = 0.01`. Jest to lepszy wynik niż dla `0.01`, ale nadal widać trend spadkowy.
+
+-   Weight Decay = 0.50 (niebieska linia): Model z najwyższą regularyzacją L2. AUC także spada ze wzrostem parametru, ale jest konsekwentnie najwyższe spośród wszystkich wartości `Weight Decay`. Wskazuje to, że silniejsza regularyzacja jest bardziej efektywna w zapobieganiu spadkowi wydajności wraz ze wzrostem złożoności sieci.
+
+Wpływ parametru:
+
+-   Dla wszystkich wartości `Weight Decay`, AUC konsekwentnie spada wraz ze wzrostem parametru (od 5.0 do 15.0). Jest to kluczowa obserwacja – zwiększanie tego parametru (złożoności) pogarsza wydajność modelu. Może to oznaczać, że model zbyt łatwo przetrenowuje się na danych treningowych, jeśli jest zbyt złożony.
+
+Najlepsze wyniki:
+
+-    Najlepsze AUC (około 0.904-0.905) uzyskiwane jest dla najniższej wartości parametru (5.0) w połączeniu z wyższymi wartościami `Weight Decay` (0.10 i 0.50).
+
+Ogólne wnioski:
+
+-    Model jest bardzo wrażliwy na "Parametr" (złożoność), a zwiększanie go drastycznie pogarsza wyniki AUC.
+
+-    `Weight Decay` (regularyzacja L2) odgrywa kluczową rolę w stabilizacji modelu. Wyższe wartości `Weight Decay` pomagają utrzymać wyższe AUC, nawet jeśli ogólny trend ze wzrostem parametru jest spadkowy.
+
+-    Optymalne dopasowanie znajduje się przy niższej złożoności sieci i wyższym poziomie regularyzacji. Wskazuje to, że dla tego problemu i danych, prostsza sieć neuronowa z odpowiednią regularyzacją działa najlepiej.
+
+```{r}
+# Predykcja prawdopodobieństw na zbiorze testowym dla modelu z wagami
+test_probs_weighted_nn <- predict(nn_weighted_tuned, newdata = test_scaled, type = "prob")[, "X1"]
+
+roc_test_weighted_nn <- roc(response = test_scaled$TenYearCHD,
+                            predictor = test_probs_weighted_nn,
+                            levels = levels(test_scaled$TenYearCHD))
+plot(roc_test_weighted_nn, col = "blue", main = "Krzywa ROC – Testowy (Sieć Neuronowa z wagami)")
+cat("AUC (test, wagi):", auc(roc_test_weighted_nn), "\n")
+```
+
+Krzywa ROC dla Testowego (Sieć Neuronowa z wagami) wykazuje bardzo dobrą zdolność predykcyjną. Jej kształt, z wyraźnym odchyleniem od linii losowej i bliskością lewego górnego rogu, sygnalizuje wysokie AUC. Model Sieci Neuronowej z wagami efektywnie rozróżnia między klasami, prezentując solidną i efektywną predykcję, porównywalną z najlepszymi dotychczasowymi wynikami.
+
+```{r}
+# Przewidywania na zbiorze testowym dla modelu z wagami
+test_preds_weighted_nn <- predict(nn_weighted_tuned, newdata = test_scaled, type = "raw")
+
+# Macierz pomyłek dla modelu z wagami
+cm_test_weighted_nn <- confusionMatrix(test_preds_weighted_nn, test_scaled$TenYearCHD, positive = "X1")
+
+cm_df_weighted_nn <- as.data.frame(cm_test_weighted_nn$table)
+colnames(cm_df_weighted_nn) <- c("Prawdziwa", "Przewidziana", "Liczba")
+
+ggplot(data = cm_df_weighted_nn, aes(x = Przewidziana, y = Prawdziwa, fill = Liczba)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Liczba), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1") +
+  labs(
+    title = "Macierz pomyłek (zbiór testowy, model z wagami, Sieć Neuronowa)",
+    x = "Przewidziana etykieta",
+    y = "Rzeczywista etykieta"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+Model poprawnie zidentyfikował 98 instancji klasy 1 (prawdziwie pozytywne). 95 przypadków klasy 1 zostało błędnie sklasyfikowanych jako 0 (fałszywie negatywne), co oznacza, że niemal połowa rzeczywistych przypadków klasy 1 pozostaje niewykryta. Co szczególnie alarmujące, aż 1284 instancje klasy 0 zostały niepoprawnie oznaczonych jako 1 (fałszywie pozytywne), co jest dramatycznie wysoką liczbą fałszywych alarmów.
+
+Podsumowując: Ten model charakteryzuje się niską czułością (recall) dla klasy 1 (wykrywa 98 z 98+95 = 193 rzeczywistych przypadków klasy 1) i ekstremalnie wysokim odsetkiem fałszywie pozytywnych wyników. W kontekście niezbalansowanego zbioru i celu poprawnego wykrywania wartości 1, model jest bardzo słaby i generuje ogromną liczbę fałszywych alarmów, co czyni go praktycznie bezużytecznym. Konieczna jest pilna i gruntowna rewizja podejścia do modelowania.
+
+```{r}
+# Wykres ważności zmiennych dla modelu z wagami
+plot(varImp(nn_weighted_tuned), main = "Istotność zmiennych (Sieć Neuronowa z wagami)")
+```
+
+Zmienna "age" (wiek) jest zdecydowanie najbardziej istotna, osiągając wartość bliską 100. Tuż za nią plasuje się "education.Q" (edukacja.Q), również wykazując bardzo wysoką istotność. Zmienne takie jak "sysBP" (skurczowe ciśnienie krwi), "currentSmoker.1" (aktualny palacz), "cigsPerDay" (liczba papierosów dziennie) i "heartRate" (częstość akcji serca) również posiadają znaczącą istotność, oscylującą w okolicach 60-70.
+
+W dalszej kolejności, zmienne takie jak "prevalentHyp.1" (występujące nadciśnienie), "diaBP" (rozkurczowe ciśnienie krwi), "totChol" (całkowity cholesterol) i "BPMeds.1" (leki na ciśnienie krwi) wykazują umiarkowaną istotność. Na końcu listy znajdują się zmienne o najniższej istotności, takie jak "diabetes.1" (cukrzyca), "BMI" (wskaźnik masy ciała) i "prevalentStroke.1" (występujący udar), z czego "prevalentStroke.1" ma najniższą wartość.
+
+Wykres jasno wskazuje na wiek i wykształcenie jako kluczowe czynniki w analizowanym modelu sieci neuronowej, podczas gdy udar i BMI wydają się mieć marginalne znaczenie.
+
+```{r}
+stopCluster(cl)
+```
